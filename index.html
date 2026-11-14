@@ -337,7 +337,7 @@ body[data-co="aurea"] .banner{background:#fff6e8;color:#8a5a12;border-bottom:1px
   <p id="storeInfo">Los datos y fotos se guardan solo en este navegador y dispositivo. Exporta respaldos con frecuencia.</p>
 </div></dialog>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
-<input type="file" id="catFile" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+<input type="file" id="catFile" hidden>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1552,6 +1552,26 @@ function exportKind(k){const sp=CSV_SPECS[k],q=v=>`"${String(v??'').replace(/"/g
   const rows=[sp.cols.map(c=>c[1]),...data.map(sp.row)];
   download(new Blob(['﻿'+rows.map(r=>r.map(q).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}),`${sp.file}-${slug(coFor(CO).short)}${data.length?'':'-plantilla'}.csv`)}
 /* ===== Lectura de archivos: CSV o Excel (.xlsx) sin librerías externas ===== */
+// Descompresión "deflate" en JavaScript puro (para navegadores sin DecompressionStream, p. ej. iPhone con iOS anterior a 16.4)
+function inflateRaw(src){let pos=0,bit=0,bc=0;const out=[];
+  const rb=n=>{while(bc<n){if(pos>=src.length)throw new Error('Excel dañado');bit|=src[pos++]<<bc;bc+=8}const v=bit&((1<<n)-1);bit>>>=n;bc-=n;return v};
+  const build=lens=>{const cnt=new Uint16Array(16),offs=new Uint16Array(16),sym=new Uint16Array(lens.length);for(const l of lens)cnt[l]++;cnt[0]=0;
+    for(let i=1;i<16;i++)offs[i]=offs[i-1]+cnt[i-1];lens.forEach((l,i)=>{if(l)sym[offs[l]++]=i});return{cnt,sym}};
+  const dec=t=>{let code=0,first=0,idx=0;for(let l=1;l<16;l++){code|=rb(1);const c=t.cnt[l];if(code-c<first)return t.sym[idx+(code-first)];idx+=c;first+=c;first<<=1;code<<=1}throw new Error('Excel dañado')};
+  const LB=[3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258],LE=[0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0],
+    DB=[1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577],DE=[0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+  let fl,fd;let last=0;
+  while(!last){last=rb(1);const type=rb(2);
+    if(type===0){bit=0;bc=0;const len=src[pos]|src[pos+1]<<8;pos+=4;for(let i=0;i<len;i++)out.push(src[pos++]);continue}
+    let lt,dt;
+    if(type===1){if(!fl){const l=new Array(288).fill(8);for(let i=144;i<256;i++)l[i]=9;for(let i=256;i<280;i++)l[i]=7;fl=build(l);fd=build(new Array(30).fill(5))}lt=fl;dt=fd}
+    else if(type===2){const hl=rb(5)+257,hd=rb(5)+1,hc=rb(4)+4,ord=[16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15],cl=new Array(19).fill(0);
+      for(let i=0;i<hc;i++)cl[ord[i]]=rb(3);const ct=build(cl),ls=[];
+      while(ls.length<hl+hd){const sy=dec(ct);if(sy<16)ls.push(sy);else if(sy===16){const pv=ls[ls.length-1];for(let r=rb(2)+3;r--;)ls.push(pv)}else for(let r=sy===17?rb(3)+3:rb(7)+11;r--;)ls.push(0)}
+      lt=build(ls.slice(0,hl));dt=build(ls.slice(hl))}
+    else throw new Error('Excel dañado');
+    for(;;){const sy=dec(lt);if(sy<256)out.push(sy);else if(sy===256)break;else{const i=sy-257,len=LB[i]+rb(LE[i]),d=dec(dt),dist=DB[d]+rb(DE[d]);let st=out.length-dist;for(let k=0;k<len;k++)out.push(out[st+k])}}}
+  return new Uint8Array(out)}
 async function unzipXlsx(buf){
   const dv=new DataView(buf),u8=new Uint8Array(buf),td=new TextDecoder();let eocd=-1;
   for(let i=buf.byteLength-22;i>=Math.max(0,buf.byteLength-65557);i--)if(dv.getUint32(i,true)===0x06054b50){eocd=i;break}
@@ -1561,8 +1581,8 @@ async function unzipXlsx(buf){
     ents[td.decode(u8.subarray(q+46,q+46+nl))]={m:dv.getUint16(q+10,true),cs:dv.getUint32(q+20,true),off:dv.getUint32(q+42,true)};q+=46+nl+el+cl}
   return async name=>{const e=ents[name];if(!e)return null;const st=e.off+30+dv.getUint16(e.off+26,true)+dv.getUint16(e.off+28,true),data=u8.subarray(st,st+e.cs);
     if(e.m===0)return td.decode(data);if(e.m!==8)throw new Error('Formato de compresión no soportado en el Excel.');
-    if(typeof DecompressionStream==='undefined')throw new Error('Este navegador no puede leer Excel; guarda el archivo como CSV.');
-    return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text()}}
+    if(typeof DecompressionStream!=='undefined'){try{return await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text()}catch(e){}}
+    return td.decode(inflateRaw(data))}}
 const colIdx=ref=>{let n=0;for(const ch of (/^[A-Z]+/.exec(ref)||['A'])[0])n=n*26+ch.charCodeAt(0)-64;return n-1};
 async function readXlsx(file){
   const rd=await unzipXlsx(await file.arrayBuffer()),X=t=>new DOMParser().parseFromString(t,'application/xml'),T=(el,tag)=>[...el.getElementsByTagNameNS('*',tag)];
@@ -1581,8 +1601,10 @@ function headerIdx(k,row){const hdr=(row||[]).map(v=>normTxt(v)),idx={};
 const NEED={sup:['name'],cli:['name'],cat:['sup','name'],prod:['sup','name']};
 function findHeader(k,rows){for(let i=0;i<Math.min(rows.length,15);i++){const idx=headerIdx(k,rows[i]);if(NEED[k].every(x=>idx[x]!=null))return i}return -1}
 async function readTable(k,file){
-  if(/\.xls$/i.test(file.name))throw new Error('El formato .xls (Excel 97-2003) no se puede leer: guárdalo como .xlsx o CSV.');
-  if(/\.xlsx$/i.test(file.name)||/spreadsheetml/.test(file.type)){const sheets=await readXlsx(file);
+  // se reconoce por el contenido, no por el nombre (en Android a veces llega sin extensión)
+  const head=new Uint8Array(await file.slice(0,4).arrayBuffer());
+  if(head[0]===0xD0&&head[1]===0xCF&&head[2]===0x11&&head[3]===0xE0)throw new Error('El formato .xls (Excel 97-2003) no se puede leer: guárdalo como .xlsx o CSV.');
+  if(head[0]===0x50&&head[1]===0x4B&&head[2]===3&&head[3]===4){const sheets=await readXlsx(file);
     const pref={cli:'client',sup:'proveedor',cat:'categor',prod:'product'}[k],ord=[...sheets.filter(x=>normTxt(x.name).includes(pref)),...sheets.filter(x=>!normTxt(x.name).includes(pref))];
     for(const x of ord){const h=findHeader(k,x.rows);if(h>=0)return{rows:x.rows,h,sheet:x.name}}return{rows:(ord[0]||{rows:[]}).rows,h:-1,sheet:(ord[0]||{}).name}}
   const rows=parseCSV(await file.text());return{rows,h:findHeader(k,rows)}}
@@ -1930,7 +1952,8 @@ document.getElementById('menuBtn').onclick=async()=>{document.getElementById('me
 menu.addEventListener('click',e=>{const b=e.target.closest('[data-m]');if(b){menu.close();const m=b.dataset.m;
   if(m==='company')companyForm();if(m==='backup')exportBackup();if(m==='import')document.getElementById('importFile').click()}else if(e.target===menu)menu.close()});
 document.getElementById('importFile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)importBackup(f)};
-document.getElementById('catFile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)importKind(csvKind,f).catch(err=>toast('No se pudo importar: '+err.message))};
+document.getElementById('catFile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(!f)return;const box=document.getElementById('csvRes');if(box&&modal.open)box.innerHTML=`<div class="csvres"><b>Leyendo “${esc(f.name)}”…</b></div>`;
+  importKind(csvKind,f).catch(err=>{const m='No se pudo importar “'+f.name+'”: '+err.message;if(box&&modal.open)box.innerHTML=`<div class="csvres"><b>${esc(m)}</b></div>`;else toast(m)})};
 
 /* ===== Inicio ===== */
 (async()=>{
