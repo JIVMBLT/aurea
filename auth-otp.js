@@ -260,13 +260,19 @@
     setBusy(button, true, 'Enviando…', isResend ? 'Reenviar código' : 'Enviar código');
     setMessage('');
 
+    let sent = false;
     try {
       await cloud.auth.sendOtp(email);
+      sent = true;
       showCodeStep(email);
     } catch (error) {
       setMessage(readableError(error, 'send'), 'error');
     } finally {
-      if (!isResend) setBusy(sendButton, false, 'Enviando…', 'Enviar código');
+      if (!isResend) {
+        setBusy(sendButton, false, 'Enviando…', 'Enviar código');
+      } else if (!sent) {
+        setBusy(resendButton, false, 'Enviando…', 'Reenviar código');
+      }
     }
   }
 
