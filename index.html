@@ -334,12 +334,14 @@ body[data-co="aurea"] .banner{background:#fff6e8;color:#8a5a12;border-bottom:1px
   <button type="button" data-m="backup">⬇️ Exportar respaldo completo (con fotos)</button>
   <button type="button" data-m="import">⬆️ Importar respaldo</button>
   <button type="button" data-m="close">Cerrar</button>
-  <p id="storeInfo">Los datos y fotos se guardan solo en este navegador y dispositivo. Exporta respaldos con frecuencia.</p>
+  <p id="storeInfo">Conectando con Supabase…</p>
 </div></dialog>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 <input type="file" id="catFile" hidden>
 <div class="toast" id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="./supabase-adapter.js"></script>
 <script>
 'use strict';
 /* ===== Utilidades ===== */
@@ -370,7 +372,7 @@ const fmt=n=>new Intl.NumberFormat('es-MX',{style:'currency',currency:'MXN'}).fo
 const pctf=x=>isFinite(x)?(x*100).toLocaleString('es-MX',{maximumFractionDigits:1})+'%':'—';
 const r2=n=>Math.round((Number(n)||0)*100)/100;
 const sum=a=>a.reduce((s,x)=>s+Math.round((Number(x)||0)*100),0)/100;
-const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,9);
+const uid=()=>crypto.randomUUID();
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const today=()=>{const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)};
 const fdate=s=>{if(!s)return'';const[y,m,d]=s.split('-');return`${d}/${m}/${y}`};
@@ -402,23 +404,51 @@ function ask(msg,okLabel='Aceptar',danger=false){return new Promise(res=>{const 
   ok.onclick=()=>d.close('ok');document.getElementById('cno').onclick=()=>d.close('cancel');
   d.returnValue='';d.onclose=()=>res(d.returnValue==='ok');d.showModal()})}
 
-/* ===== Almacenamiento (IndexedDB, con respaldo en memoria) ===== */
-let db=null,memoryOnly=false;
+/* ===== Almacenamiento (Supabase, con respaldo local IndexedDB) ===== */
+let db=null,memoryOnly=false,cloudMode=false;
 const STORES=['projects','lines','expenses','files','settings','prospects','materials','suppliers','products'];
 const mem=Object.fromEntries(STORES.map(s=>[s,new Map()]));
 const urlCache=new Map();
-function openDB(){return new Promise((res,rej)=>{let r;try{r=indexedDB.open('aurea-control-gastos',2)}catch(e){return rej(e)}
+
+function openLocalDB(){return new Promise((res,rej)=>{let r;try{r=indexedDB.open('aurea-control-gastos',2)}catch(e){return rej(e)}
   r.onupgradeneeded=()=>{const d=r.result;for(const s of STORES)if(!d.objectStoreNames.contains(s))d.createObjectStore(s,{keyPath:'id'})};
   r.onsuccess=()=>{const d=r.result;d.onversionchange=()=>{d.close();const w=document.getElementById('warn');w.textContent='Se abrió una versión más nueva de la app en otra pestaña o ventana. Recarga esta página para seguir guardando.';w.hidden=false};res(d)};
   r.onerror=()=>rej(r.error);r.onblocked=()=>{const w=document.getElementById('warn');w.textContent='La app está abierta en otra pestaña o ventana con una versión anterior. Ciérrala y recarga esta página.';w.hidden=false}})}
+
+async function openDB(){
+  if(window.AureaCloud){
+    try{
+      await window.AureaCloud.connect();
+      cloudMode=true;
+      document.getElementById('warn').hidden=true;
+      return{cloud:true}
+    }catch(e){
+      console.error('No se pudo conectar con Supabase',e);
+      const w=document.getElementById('warn');
+      w.textContent='No se pudo conectar con Supabase. La app está usando el respaldo local de este navegador.';
+      w.hidden=false
+    }
+  }
+  cloudMode=false;
+  return openLocalDB()
+}
+
 window.addEventListener('error',e=>{try{toast('Ocurrió un error: '+(e.message||e))}catch(_){}});
 window.addEventListener('unhandledrejection',e=>{try{toast('Ocurrió un error: '+((e.reason&&e.reason.message)||e.reason))}catch(_){}});
+
 function idb(store,mode,fn){return new Promise((res,rej)=>{const t=db.transaction(store,mode);const r=fn(t.objectStore(store));t.oncomplete=()=>res(r&&r.result);t.onerror=()=>rej(t.error);t.onabort=()=>rej(t.error||new Error('Operación cancelada (¿espacio insuficiente?)'))})}
-const dbAll=s=>memoryOnly?Promise.resolve([...mem[s].values()]):idb(s,'readonly',o=>o.getAll());
-const dbGet=(s,id)=>memoryOnly?Promise.resolve(mem[s].get(id)):idb(s,'readonly',o=>o.get(id));
-const dbPut=(s,v)=>memoryOnly?(mem[s].set(v.id,v),Promise.resolve()):idb(s,'readwrite',o=>{o.put(v)});
-const dbDel=(s,id)=>memoryOnly?(mem[s].delete(id),Promise.resolve()):idb(s,'readwrite',o=>{o.delete(id)});
-const dbClear=s=>memoryOnly?(mem[s].clear(),Promise.resolve()):idb(s,'readwrite',o=>{o.clear()});
+const localAll=s=>memoryOnly?Promise.resolve([...mem[s].values()]):idb(s,'readonly',o=>o.getAll());
+const localGet=(s,id)=>memoryOnly?Promise.resolve(mem[s].get(id)):idb(s,'readonly',o=>o.get(id));
+const localPut=(s,v)=>memoryOnly?(mem[s].set(v.id,v),Promise.resolve()):idb(s,'readwrite',o=>{o.put(v)});
+const localDel=(s,id)=>memoryOnly?(mem[s].delete(id),Promise.resolve()):idb(s,'readwrite',o=>{o.delete(id)});
+const localClear=s=>memoryOnly?(mem[s].clear(),Promise.resolve()):idb(s,'readwrite',o=>{o.clear()});
+
+const dbAll=s=>cloudMode?window.AureaCloud.all(s):localAll(s);
+const dbGet=(s,id)=>cloudMode?window.AureaCloud.get(s,id):localGet(s,id);
+const dbPut=(s,v)=>cloudMode?window.AureaCloud.put(s,v):localPut(s,v);
+const dbDel=(s,id)=>cloudMode?window.AureaCloud.delete(s,id):localDel(s,id);
+const dbClear=s=>cloudMode?window.AureaCloud.clear(s):localClear(s);
+
 async function loadAll(){S.allProjects=await dbAll('projects');S.lines=await dbAll('lines');S.expenses=await dbAll('expenses');S.allProspects=await dbAll('prospects');S.materials=await dbAll('materials');S.suppliers=await dbAll('suppliers');S.products=await dbAll('products');
   S.settingsAll=Object.fromEntries((await dbAll('settings')).map(x=>[x.id,x]));applyCompany()}
 /* Datos de versiones anteriores (una sola empresa) → se asignan a E&E Consulting */
@@ -431,8 +461,17 @@ async function migrate(){let ch=false;
     if(nm){let sp=S.suppliers.find(x=>normTxt(x.name)===normTxt(nm));if(!sp){sp={id:uid(),name:nm,createdAt:Date.now()};await dbPut('suppliers',sp);S.suppliers.push(sp)}sid=sp.id}
     await dbPut('materials',{...m,supplierId:sid,productId:m.productId||''});ch=true}
   if(ch)await loadAll()}
-async function fileURL(id){if(urlCache.has(id))return urlCache.get(id);const f=await dbGet('files',id);if(!f)return'';const u=URL.createObjectURL(f.blob);urlCache.set(id,u);return u}
-async function delFile(id){await dbDel('files',id);if(urlCache.has(id)){URL.revokeObjectURL(urlCache.get(id));urlCache.delete(id)}}
+async function fileURL(id){
+  if(cloudMode)return window.AureaCloud.fileURL(id);
+  if(urlCache.has(id))return urlCache.get(id);
+  const f=await dbGet('files',id);if(!f)return'';
+  const u=URL.createObjectURL(f.blob);urlCache.set(id,u);return u
+}
+async function delFile(id){
+  if(cloudMode){await dbDel('files',id);return}
+  await dbDel('files',id);
+  if(urlCache.has(id)){URL.revokeObjectURL(urlCache.get(id));urlCache.delete(id)}
+}
 
 /* Reduce el peso de las fotos (máx. 1600 px, JPEG 80%) */
 async function compressImage(file){
@@ -1075,13 +1114,13 @@ function projectForm(p,preset){
       companyId:val(f,'companyId')||CO,createdAt:p.createdAt||Date.now(),updatedAt:Date.now()};
     await dbPut('projects',proj);
     // partidas automáticas: una por moneda con el total de sus productos; las partidas capturadas a mano no se tocan
-    const T=itemTotals(clean),keep=new Set(),old=S.lines.filter(l=>l.projectId===proj.id&&l.auto);
+    const T=itemTotals(clean),keep=new Set(),old=S.lines.filter(l=>l.projectId===proj.id&&l.auto),targetByCur={};
     const curs=Object.keys(T.byCur).sort((a,b)=>a==='MXN'?-1:b==='MXN'?1:a.localeCompare(b));
-    for(const [i,c] of curs.entries()){const id=`auto-${proj.id}-${c}`;keep.add(id);
-      await dbPut('lines',{...(old.find(l=>l.id===id)||{}),id,projectId:proj.id,auto:true,cur:c,name:`Productos en ${c}`,amount:T.byCur[c],order:i})}
-    for(const l of old)if(!keep.has(l.id)){const target=`auto-${proj.id}-${l.cur||'MXN'}`;
+    for(const [i,c] of curs.entries()){const prev=old.find(l=>(l.cur||'MXN')===c),id=prev?prev.id:uid();keep.add(id);targetByCur[c]=id;
+      await dbPut('lines',{...(prev||{}),id,projectId:proj.id,auto:true,cur:c,name:`Productos en ${c}`,amount:T.byCur[c],order:i})}
+    for(const l of old)if(!keep.has(l.id)){const target=targetByCur[l.cur||'MXN'];
       const exps=S.expenses.filter(e=>e.lineId===l.id);
-      if(exps.length&&keep.has(target)){for(const e of exps)await dbPut('expenses',{...e,lineId:target});await dbDel('lines',l.id)}
+      if(exps.length&&target){for(const e of exps)await dbPut('expenses',{...e,lineId:target});await dbDel('lines',l.id)}
       else if(exps.length)await dbPut('lines',{...l,amount:0,name:l.name.replace(/ \(sin productos\)$/,'')+' (sin productos)'});else await dbDel('lines',l.id)}
     await loadAll();
     if(proj.companyId!==CO)setCompany(proj.companyId);
@@ -1948,7 +1987,8 @@ document.getElementById('backBtn').onclick=async()=>{
   else view={name:'home',section:view.name==='prospect'?'prospectos':view.name==='supplier'?'catalogo':'proyectos'};render();window.scrollTo(0,0)};
 const menu=document.getElementById('menu');
 document.getElementById('menuBtn').onclick=async()=>{document.getElementById('menuCo').textContent='🏢 Datos de '+coFor(CO).short+' (logo, RFC, folios)';menu.showModal();
-  try{const est=await navigator.storage.estimate();document.getElementById('storeInfo').textContent=`Los datos y fotos se guardan solo en este navegador y dispositivo (uso aprox. ${(est.usage/1048576).toFixed(1)} MB). Exporta respaldos con frecuencia.`}catch(e){}};
+  if(cloudMode)document.getElementById('storeInfo').textContent='Datos sincronizados con Supabase. La caché local se usa solo como respaldo si la conexión falla.';
+  else try{const est=await navigator.storage.estimate();document.getElementById('storeInfo').textContent=`Modo local · uso aprox. ${(est.usage/1048576).toFixed(1)} MB. Supabase no está disponible.`}catch(e){}}
 menu.addEventListener('click',e=>{const b=e.target.closest('[data-m]');if(b){menu.close();const m=b.dataset.m;
   if(m==='company')companyForm();if(m==='backup')exportBackup();if(m==='import')document.getElementById('importFile').click()}else if(e.target===menu)menu.close()});
 document.getElementById('importFile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)importBackup(f)};
@@ -1957,9 +1997,20 @@ document.getElementById('catFile').onchange=e=>{const f=e.target.files[0];e.targ
 
 /* ===== Inicio ===== */
 (async()=>{
-  try{db=await openDB();await dbAll('projects')}catch(e){memoryOnly=true;document.getElementById('warn').hidden=false}
+  try{
+    db=await openDB();
+    await dbAll('projects')
+  }catch(e){
+    console.error('Falló el almacenamiento principal',e);
+    cloudMode=false;
+    try{db=await openLocalDB()}catch(_){memoryOnly=true}
+    const w=document.getElementById('warn');
+    w.textContent='Supabase no está listo o rechazó el acceso. La app está usando el respaldo local de este navegador.';
+    w.hidden=false
+  }
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
   await loadAll();await migrate();render();
+  if(cloudMode)toast('Conectado con Supabase');
 })();
 </script>
 </body>
