@@ -333,7 +333,8 @@ body[data-co="aurea"] .banner{background:#fff6e8;color:#8a5a12;border-bottom:1px
   <button type="button" data-m="company" id="menuCo">🏢 Datos de la empresa (logo, RFC, folios)</button>
   <button type="button" data-m="backup">⬇️ Exportar respaldo completo (con fotos)</button>
   <button type="button" data-m="import">⬆️ Importar respaldo</button>
-  <button type="button" data-m="close">Cerrar</button>
+  <button type="button" data-m="logout">🔒 Cerrar sesión</button>
+  <button type="button" data-m="close">Cerrar menú</button>
   <p id="storeInfo">Conectando con Supabase…</p>
 </div></dialog>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
@@ -342,6 +343,7 @@ body[data-co="aurea"] .banner{background:#fff6e8;color:#8a5a12;border-bottom:1px
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="./supabase-adapter.js"></script>
+<script src="./auth-otp.js"></script>
 <script>
 'use strict';
 /* ===== Utilidades ===== */
@@ -1989,14 +1991,22 @@ const menu=document.getElementById('menu');
 document.getElementById('menuBtn').onclick=async()=>{document.getElementById('menuCo').textContent='🏢 Datos de '+coFor(CO).short+' (logo, RFC, folios)';menu.showModal();
   if(cloudMode)document.getElementById('storeInfo').textContent='Datos sincronizados con Supabase. La caché local se usa solo como respaldo si la conexión falla.';
   else try{const est=await navigator.storage.estimate();document.getElementById('storeInfo').textContent=`Modo local · uso aprox. ${(est.usage/1048576).toFixed(1)} MB. Supabase no está disponible.`}catch(e){}}
-menu.addEventListener('click',e=>{const b=e.target.closest('[data-m]');if(b){menu.close();const m=b.dataset.m;
-  if(m==='company')companyForm();if(m==='backup')exportBackup();if(m==='import')document.getElementById('importFile').click()}else if(e.target===menu)menu.close()});
+menu.addEventListener('click',async e=>{const b=e.target.closest('[data-m]');if(b){menu.close();const m=b.dataset.m;
+  if(m==='company')companyForm();if(m==='backup')exportBackup();if(m==='import')document.getElementById('importFile').click();
+  if(m==='logout'&&window.AureaAuth)await window.AureaAuth.signOut()}else if(e.target===menu)menu.close()});
 document.getElementById('importFile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)importBackup(f)};
 document.getElementById('catFile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(!f)return;const box=document.getElementById('csvRes');if(box&&modal.open)box.innerHTML=`<div class="csvres"><b>Leyendo “${esc(f.name)}”…</b></div>`;
   importKind(csvKind,f).catch(err=>{const m='No se pudo importar “'+f.name+'”: '+err.message;if(box&&modal.open)box.innerHTML=`<div class="csvres"><b>${esc(m)}</b></div>`;else toast(m)})};
 
 /* ===== Inicio ===== */
 (async()=>{
+  if(!window.AureaAuth){
+    const w=document.getElementById('warn');
+    w.textContent='El módulo de acceso seguro no pudo cargarse. Recarga la página para intentarlo nuevamente.';
+    w.hidden=false;
+    return
+  }
+  await window.AureaAuth.requireAccess();
   try{
     db=await openDB();
     await dbAll('projects')
