@@ -1997,7 +1997,17 @@ document.getElementById('catFile').onchange=e=>{const f=e.target.files[0];e.targ
 
 /* ===== Inicio ===== */
 (async()=>{
-  try{db=await openDB();await dbAll('projects')}catch(e){memoryOnly=true;document.getElementById('warn').hidden=false}
+  try{
+    db=await openDB();
+    await dbAll('projects')
+  }catch(e){
+    console.error('Falló el almacenamiento principal',e);
+    cloudMode=false;
+    try{db=await openLocalDB()}catch(_){memoryOnly=true}
+    const w=document.getElementById('warn');
+    w.textContent='Supabase no está listo o rechazó el acceso. La app está usando el respaldo local de este navegador.';
+    w.hidden=false
+  }
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
   await loadAll();await migrate();render();
   if(cloudMode)toast('Conectado con Supabase');
