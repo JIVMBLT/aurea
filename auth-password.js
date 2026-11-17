@@ -41,6 +41,7 @@
       '.aurea-auth-card{width:min(100%,420px);background:#fff;border:1px solid rgba(198,151,67,.42);border-radius:22px;padding:30px;box-shadow:0 24px 70px rgba(0,0,0,.42)}',
       '.aurea-auth-brand{display:flex;align-items:center;gap:12px;margin-bottom:24px}',
       '.aurea-auth-mark{display:grid;place-items:center;width:44px;height:44px;border-radius:50%;background:#1c1915;color:#d8ad62;font-family:Georgia,serif;font-size:24px}',
+      '.aurea-auth-logo{display:block;width:80px;height:58px;object-fit:contain;flex:none}',
       '.aurea-auth-brand strong{display:block;font-family:Georgia,serif;font-size:24px;letter-spacing:.04em;color:#211d18}',
       '.aurea-auth-brand span{display:block;margin-top:2px;color:#7b7064;font-size:12px;letter-spacing:.08em;text-transform:uppercase}',
       '.aurea-auth-card h2{margin:0 0 8px;font-size:24px;color:#211d18}',
@@ -237,6 +238,24 @@
     }
   });
 
+  // El logo original vive incrustado en index.html como LOGOS['aurea-light'].
+  // Se asigna desde el script principal una vez que ese objeto existe.
+  function setLogo(src) {
+    if (typeof src !== 'string' || !src.startsWith('data:image/png;base64,')) return;
+    mount();
+    const previous = gate.querySelector('.aurea-auth-mark, .aurea-auth-logo');
+    if (!previous) return;
+    const img = el('img', {
+      class: 'aurea-auth-logo',
+      alt: 'Logotipo AUREA',
+      width: '80',
+      height: '58',
+      draggable: 'false'
+    });
+    img.src = src;
+    previous.replaceWith(img);
+  }
+
   function setMessage(text, kind = '') {
     messageBox.textContent = text;
     messageBox.dataset.kind = kind;
@@ -344,6 +363,7 @@
 
   mount();
   window.AureaAuth = {
+    setLogo,
     requireAccess,
     signOut,
     isAuthenticated,
