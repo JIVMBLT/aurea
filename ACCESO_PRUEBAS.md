@@ -1,36 +1,27 @@
-# AUREA - Acceso compartido de pruebas
+# AUREA - Login provisional de seis digitos
 
-Esta rama reemplaza el OTP por una sola pantalla de contraseña. La autenticación es real en Supabase Auth: el frontend nunca recibe la contraseña desde GitHub Actions. **No apto para producción:** todos los usuarios comparten identidad y permisos; no hay trazabilidad por persona ni revocación individual.
+Implementacion en la rama `request`. Esta pantalla es una **barrera visual de pruebas**, no autenticacion completa. La API de Supabase y sus tablas deben seguir protegidas con RLS/autenticacion propia; el PIN no crea un JWT ni otorga identidad de Supabase.
 
-## Configuración requerida
+## Configuracion y requisitos
 
-En GitHub, Settings > Secrets and variables > Actions:
+1. Ejecutar `sql/aurea_login_rpc.sql` en Supabase SQL Editor como administrador de la tabla.
+2. Comprobar que `public.login` contiene `"user" = 'jvera@bltmexico.com.mx'`, `active=1` y un hash bcrypt de **exactamente seis digitos numericos** en `"pass"`. Si se hasheo otra palabra o codigo, no se validara un PIN de seis digitos.
+3. La variable de GitHub `AUREA_TEST_EMAIL` debe coincidir con el correo de `public.login`. El frontend lo muestra solo lectura.
+4. El workflow `.github/workflows/aurea-test-access.yml` construye `auth-config.js` con el correo y publica la app mediante Actions. **No utiliza ni necesita** `AUREA_TEST_PASSWORD` ni `SUPABASE_SERVICE_ROLE_KEY`. No revela el hash de la BD.
+5. Para ejecutar `workflow_dispatch` desde GitHub Actions normalmente debe existir el workflow en la rama predeterminada. Revisar el cambio antes de incorporarlo a main. GitHub Pages debe estar configurado para Actions.
 
-**Repository secrets**
-- `AUREA_TEST_PASSWORD`: contraseña compartida robusta, mínimo 12 caracteres. No usar un secreto que ya tenga otros propósitos.
-- `SUPABASE_SERVICE_ROLE_KEY`: clave de servicio privada de Supabase, usada solamente en el job de provisión; jamás en la web pública.
+## Flujo
 
-**Repository variables**
-- `AUREA_TEST_EMAIL`: dirección de la cuenta compartida de pruebas (será visible públicamente en `auth-config.js`).
-- `SUPABASE_URL`: URL del proyecto Supabase.
+1. Usuario introduce PIN de seis digitos.
+2. La funcion `aurea_login_salt` entrega unicamente la sal bcrypt del registro activo.
+3. El frontend genera el hash bcrypt, con la misma sal y costo que el hash almacenado, y lo manda a `aurea_login_verify`.
+4. La funcion compara el hash exacto con `public.login.pass` y `active=1`. Devuelve booleano.
+5. Si es correcto se muestra la interfaz; si no, permanece en login. Hay un limitador **solo local** de cinco intentos / un minuto, que no constituye proteccion frente a fuerza bruta remota.
 
-El workflow `.github/workflows/aurea-test-access.yml` crea o actualiza ese usuario, lo vincula a `companies.code='aurea'` mediante `company_members`, crea la configuración pública que contiene **solo el correo** y publica `dist` en GitHub Pages. Se ejecuta **solo manualmente**.
+## Riesgos y restricciones
 
-## Primer despliegue
-
-GitHub exige que un workflow de `workflow_dispatch` exista en la rama predeterminada para poder lanzarlo normalmente desde Actions. Antes de ejecutarlo, revisar y fusionar **solo la configuración del workflow y los archivos del acceso** a la rama predeterminada, o coordinar su adopción desde una rama por el equipo. El job hace checkout explícito de `request`. Asegurar que Pages esté configurado para publicar con **GitHub Actions**, no con una rama.
-
-No ejecutar el workflow con cambios no revisados en `scripts/provision-test-user.mjs` en `request`: durante la provisión dispone de una clave administrativa. El repositorio puede seguir siendo público porque la clave administrativa es un secreto de Actions, pero sus permisos son amplios.
-
-La app requiere que la base de datos tenga las tablas `companies` y `company_members` tal como las espera `supabase-adapter.js`, y las políticas RLS apropiadas para los permisos de la cuenta compartida.
-
-## Rotar la contraseña
-
-Actualizar `AUREA_TEST_PASSWORD` en Secrets y volver a ejecutar el workflow. La contraseña anterior dejará de servir para inicios de sesión nuevos. Para revocar también sesiones que ya estén abiertas, se necesita invalidarlas en Supabase; cambiar solo la contraseña no garantiza su cierre inmediato.
-
-## Limitaciones
-
-- Sin una validación exitosa contra Supabase, la pantalla no desbloquea la aplicación.
-- La configuración `auth-config.js` se genera en el despliegue; **no** se almacena un correo fijo ni la contraseña en el repositorio.
-- No se ha comprobado que los secretos estén creados, ni que GitHub Pages y la base estén listos: el despliegue real está pendiente.
-- Los datos locales de IndexedDB no constituyen un almacén cifrado por este login.
+- El hash calculado en el navegador actua como credencial reutilizable. Quien lo capture podria repetir la llamada RPC. No almacenar informacion sensible basandose unicamente en esta barrera.
+- La sal bcrypt visible permite fuerza bruta fuera de linea sobre un PIN de solo un millon de combinaciones. La base de datos nunca entrega el hash original al navegador.
+- No hay sesion de Supabase Auth. El adaptador actual intentara `AureaCloud.connect()` al cargar los datos; si no existe una sesion real, **la app puede caer al respaldo local de IndexedDB**, no se sincronizara con Supabase. No se debe eludir RLS para forzar la conexion.
+- Los Secret existentes pueden conservarse por compatibilidad, pero ya no se usan en este workflow.
+- Pendiente probar extremo a extremo despues de ejecutar el SQL y desplegar la rama. No modificar `main` sin revision.
