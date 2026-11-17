@@ -1,15 +1,18 @@
 (() => {
   'use strict';
 
-  // Cuenta compartida de pruebas: el identificador es publico; la clave nunca
-  // se incluye en el frontend. Supabase Auth verifica la clave en el servidor.
+  // Barrera de pruebas: no proporciona una sesión de Supabase Auth.
+  // El servidor guarda el hash bcrypt, el frontend solo recibe la sal.
   const cloud = window.AureaCloud;
   const email = String(window.AureaAuthConfig?.email || '').trim().toLowerCase();
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const PIN_RE = /^[0-9]{6}$/;
 
-  let gate, form, passwordInput, messageBox, submitButton;
+  let gate, form, pinInput, messageBox, submitButton;
   let readyPromise, resolveReady;
   let authenticated = false;
+  let failures = 0;
+  let blockedUntil = 0;
 
   function el(tag, attributes = {}, value) {
     const node = document.createElement(tag);
@@ -23,7 +26,6 @@
 
   function mount() {
     if (gate) return;
-
     const style = el('style', { id: 'aurea-auth-styles' });
     style.textContent = [
       'body.aurea-auth-locked{overflow:hidden}',
@@ -40,6 +42,7 @@
       '.aurea-auth-form label{display:grid;gap:7px;font-size:13px;font-weight:700;color:#403a33}',
       '.aurea-auth-form input{width:100%;box-sizing:border-box;border:1px solid #cfc8bf;border-radius:12px;padding:13px 14px;background:#fff;color:#171411;font:inherit;outline:none}',
       '.aurea-auth-form input:focus{border-color:#b9852f;box-shadow:0 0 0 3px rgba(185,133,47,.17)}',
+      '.aurea-auth-code{text-align:center;letter-spacing:.33em;font-size:24px!important;font-variant-numeric:tabular-nums}',
       '.aurea-auth-primary{min-height:46px;border:1px solid #211d18;border-radius:12px;padding:11px 16px;background:#211d18;color:#fff;font:inherit;font-weight:750;cursor:pointer}',
       '.aurea-auth-primary:hover{background:#3a3026}',
       '.aurea-auth-primary:disabled{cursor:not-allowed;opacity:.55}',
@@ -50,49 +53,44 @@
     ].join('');
 
     gate = el('section', {
-      id: 'aureaAuthGate',
-      class: 'aurea-auth-gate',
-      role: 'dialog',
-      'aria-modal': 'true',
+      id: 'aureaAuthGate', class: 'aurea-auth-gate',
+      role: 'dialog', 'aria-modal': 'true',
       'aria-labelledby': 'aureaAuthTitle'
     });
     const card = el('div', { class: 'aurea-auth-card' });
     const brand = el('div', { class: 'aurea-auth-brand' });
-    const mark = el('div', { class: 'aurea-auth-mark', 'aria-hidden': 'true' }, 'A');
     const brandName = el('div');
     brandName.append(
       el('strong', {}, 'Aurea'),
       el('span', {}, 'Control de proyectos')
     );
-    brand.append(mark, brandName);
-
+    brand.append(el('div', { class: 'aurea-auth-mark', 'aria-hidden': 'true' }, 'A'), brandName);
     const title = el('h2', { id: 'aureaAuthTitle' }, 'Acceso de pruebas');
-    const intro = el('p', {}, 'Ingresa la contraseña compartida para acceder a AUREA.');
+    const intro = el('p', {}, 'Introduce el código numérico de 6 dígitos para continuar.');
 
-    form = el('form', { class: 'aurea-auth-form', id: 'aureaPasswordForm' });
-    const label = el('label', { for: 'aureaPasswordInput' }, 'Contraseña');
-    passwordInput = el('input', {
-      id: 'aureaPasswordInput',
-      type: 'password',
-      name: 'password',
-      autocomplete: 'current-password',
-      minlength: '1',
-      maxlength: '256',
-      required: 'required',
-      'aria-describedby': 'aureaAuthMessage'
+    form = el('form', { class: 'aurea-auth-form', id: 'aureaPinForm' });
+    const userLabel = el('label', {}, 'Correo');
+    const userDisplay = el('input', { type: 'email', readonly: 'readonly', 'aria-label': 'Correo predeterminado' });
+    userDisplay.value = email;
+    userLabel.append(userDisplay);
+    const pinLabel = el('label', { for: 'aureaPinInput' }, 'Código de acceso');
+    pinInput = el('input', {
+      id: 'aureaPinInput', class: 'aurea-auth-code',
+      type: 'password', name: 'code', inputmode: 'numeric',
+      autocomplete: 'off', pattern: '[0-9]{6}',
+      maxlength: '6', minlength: '6',
+      required: 'required', 'aria-describedby': 'aureaAuthMessage'
     });
-    label.append(passwordInput);
+    pinLabel.append(pinInput);
     submitButton = el('button', { class: 'aurea-auth-primary', type: 'submit' }, 'Entrar');
-    form.append(label, submitButton);
+    form.append(userLabel, pinLabel, submitButton);
 
     messageBox = el('p', {
-      id: 'aureaAuthMessage',
-      class: 'aurea-auth-message',
-      role: 'status',
-      'aria-live': 'polite'
+      id: 'aureaAuthMessage', class: 'aurea-auth-message',
+      role: 'status', 'aria-live': 'polite'
     });
     const note = el('p', { class: 'aurea-auth-note' },
-      'Acceso temporal para pruebas. Las personas que utilicen esta contraseña compartirán una misma identidad de prueba.'
+      'Acceso temporal de baja seguridad para pruebas. No identifica personas ni protege la API de datos.'
     );
 
     card.append(brand, title, intro, form, messageBox, note);
@@ -101,6 +99,9 @@
     document.body.prepend(gate);
     document.body.classList.add('aurea-auth-locked');
 
+    pinInput.addEventListener('input', () => {
+      pinInput.value = pinInput.value.replace(/\D/g, '').slice(0, 6);
+    });
     form.addEventListener('submit', event => {
       event.preventDefault();
       signIn();
@@ -108,68 +109,73 @@
   }
 
   function setMessage(text, kind = '') {
-    if (!messageBox) return;
     messageBox.textContent = text;
     messageBox.dataset.kind = kind;
   }
 
-  function checkConfig() {
-    if (!emailValid || !cloud?.auth?.signInWithPassword) {
+  function ready() {
+    if (!emailValid || !cloud?.auth?.getLoginSalt || !cloud?.auth?.verifyLoginHash || !window.dcodeIO?.bcrypt) {
       submitButton.disabled = true;
-      setMessage('El acceso de pruebas no está configurado. Contacta al administrador.', 'error');
+      setMessage('Falta configurar el acceso de pruebas o cargar el motor bcrypt.', 'error');
       return false;
     }
     return true;
   }
 
-  function unlock(context) {
+  function unlock() {
     authenticated = true;
-    passwordInput.value = '';
+    pinInput.value = '';
     gate.hidden = true;
     document.body.classList.remove('aurea-auth-locked');
     document.body.classList.add('aurea-authenticated');
     if (resolveReady) {
-      resolveReady(context);
+      resolveReady();
       resolveReady = null;
     }
   }
 
   async function signIn() {
-    if (!checkConfig() || !passwordInput.value) return;
-    const password = passwordInput.value;
-    passwordInput.value = '';
+    if (!ready()) return;
+    if (Date.now() < blockedUntil) {
+      setMessage('Demasiados intentos. Espera un minuto antes de volver a probar.', 'error');
+      return;
+    }
+    const pin = pinInput.value;
+    pinInput.value = '';
+    if (!PIN_RE.test(pin)) {
+      setMessage('El código debe contener exactamente 6 dígitos.', 'error');
+      pinInput.focus();
+      return;
+    }
+
     submitButton.disabled = true;
     submitButton.textContent = 'Verificando…';
     setMessage('');
     try {
-      await cloud.auth.signInWithPassword(email, password);
-      const context = await cloud.connect();
-      unlock(context);
-    } catch (error) {
-      try { await cloud.auth.signOut(); } catch (_) {}
-      if (error?.code === 'AUREA_MEMBERSHIP_REQUIRED' || error?.code === 'AUREA_COMPANY_REQUIRED') {
-        setMessage(error.message, 'error');
-      } else {
-        setMessage('Contraseña no válida o servicio no disponible. Intenta nuevamente.', 'error');
+      const salt = await cloud.auth.getLoginSalt(email);
+      if (!/^\$2[ab]\$[0-9]{2}\$[./A-Za-z0-9]{22}$/.test(salt || '')) {
+        throw new Error('LOGIN_DISABLED');
       }
-      passwordInput.focus();
+      const bcrypt = window.dcodeIO.bcrypt;
+      const hashed = await new Promise((resolve, reject) => {
+        bcrypt.hash(pin, salt, (error, result) => error ? reject(error) : resolve(result));
+      });
+      // Se envía solo el hash; el RPC consulta public.login con active=1.
+      const valid = await cloud.auth.verifyLoginHash(email, hashed);
+      if (!valid) throw new Error('LOGIN_DENIED');
+      failures = 0;
+      unlock();
+    } catch (error) {
+      failures++;
+      if (failures >= 5) {
+        blockedUntil = Date.now() + 60000;
+        failures = 0;
+      }
+      setMessage('Código incorrecto, acceso desactivado o servicio no disponible.', 'error');
+      pinInput.focus();
     } finally {
       submitButton.disabled = false;
       submitButton.textContent = 'Entrar';
-    }
-  }
-
-  async function restoreSession() {
-    if (!checkConfig()) return false;
-    try {
-      const session = await cloud.auth.getSession();
-      if (!session) return false;
-      const context = await cloud.connect();
-      unlock(context);
-      return true;
-    } catch (_) {
-      try { await cloud.auth.signOut(); } catch (_) {}
-      return false;
     }
   }
 
@@ -178,26 +184,14 @@
     if (readyPromise) return readyPromise;
     readyPromise = new Promise(resolve => {
       resolveReady = resolve;
-      restoreSession().then(restored => {
-        if (!restored) {
-          gate.hidden = false;
-          document.body.classList.add('aurea-auth-locked');
-          if (checkConfig()) passwordInput.focus();
-        }
-      });
+      if (ready()) pinInput.focus();
     });
     return readyPromise;
   }
 
   async function signOut() {
-    if (cloud?.auth?.signOut) await cloud.auth.signOut();
+    authenticated = false;
     window.location.reload();
-  }
-
-  if (cloud?.auth?.onAuthStateChange) {
-    cloud.auth.onAuthStateChange(event => {
-      if (event === 'SIGNED_OUT' && authenticated) window.location.reload();
-    });
   }
 
   mount();
