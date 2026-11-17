@@ -686,6 +686,23 @@
     return error;
   }
 
+  // RPC de pruebas: no se concede acceso SELECT a public.login.
+  async function getLoginSalt(email) {
+    if (!client) throw new Error('No se cargo Supabase');
+    const response = await client.rpc('aurea_login_salt', { p_email: email });
+    if (response.error) throw response.error;
+    return response.data;
+  }
+
+  async function verifyLoginHash(email, hash) {
+    if (!client) throw new Error('No se cargo Supabase');
+    const response = await client.rpc('aurea_login_verify', {
+      p_email: email, p_hash: hash
+    });
+    if (response.error) throw response.error;
+    return response.data === true;
+  }
+
   async function getSession() {
     if (!client) throw new Error('No se cargó la librería de Supabase');
     const response = await client.auth.getSession();
@@ -822,6 +839,8 @@
     clear,
     fileURL,
     auth: {
+      getLoginSalt,
+      verifyLoginHash,
       getSession,
       getUser,
       sendOtp,
