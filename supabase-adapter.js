@@ -721,8 +721,8 @@
 
   function setLoginProof(email, hash) {
     const normalized = String(email || '').trim().toLowerCase();
-    if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(normalized) ||
-        !/^\\$2[ab]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$/.test(String(hash || ''))) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) ||
+        !/^\$2[ab]\$[0-9]{2}\$[./A-Za-z0-9]{53}$/.test(String(hash || ''))) {
       throw accessError('Comprobante de acceso invalido.', 'AUREA_PIN_PROOF_INVALID');
     }
     loginEmail = normalized;
