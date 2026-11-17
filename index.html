@@ -2074,6 +2074,7 @@ document.getElementById('catFile').onchange=e=>{const f=e.target.files[0];e.targ
     w.hidden=false;
     return
   }
+  window.AureaAuth.setLogo(LOGOS['aurea-light']);
   await window.AureaAuth.requireAccess();
   try{
     db=await openDB();
