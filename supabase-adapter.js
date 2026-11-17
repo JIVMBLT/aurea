@@ -12,14 +12,17 @@
   const client = sdk && sdk.createClient
     ? sdk.createClient(CONFIG.url, CONFIG.publishableKey, {
         auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-          detectSessionInUrl: false
+          persistSession: true,
+          autoRefreshToken: true,
+          detectSessionInUrl: false,
+          storageKey: 'aurea-auth'
         }
       })
     : null;
 
   let company = null;
+  let membership = null;
+  let authenticatedUser = null;
   const filePaths = new Map();
   const pendingAttachments = new Map();
 
@@ -677,12 +680,152 @@
     return signed.data.signedUrl;
   }
 
+  function accessError(message, code) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  }
+
+  // RPC de pruebas: no se concede acceso SELECT a public.login.
+  async function getLoginSalt(email) {
+    if (!client) throw new Error('No se cargo Supabase');
+    const response = await client.rpc('aurea_login_salt', { p_email: email });
+    if (response.error) throw response.error;
+    return response.data;
+  }
+
+  async function verifyLoginHash(email, hash) {
+    if (!client) throw new Error('No se cargo Supabase');
+    const response = await client.rpc('aurea_login_verify', {
+      p_email: email, p_hash: hash
+    });
+    if (response.error) throw response.error;
+    return response.data === true;
+  }
+
+  async function getSession() {
+    if (!client) throw new Error('No se cargó la librería de Supabase');
+    const response = await client.auth.getSession();
+    if (response.error) throw response.error;
+    return response.data.session;
+  }
+
+  async function getUser() {
+    if (!client) throw new Error('No se cargó la librería de Supabase');
+    const response = await client.auth.getUser();
+    if (response.error) throw response.error;
+    if (!response.data.user) {
+      throw accessError('Inicia sesión para continuar.', 'AUREA_AUTH_REQUIRED');
+    }
+    return response.data.user;
+  }
+
+  async function sendOtp(email) {
+    if (!client) throw new Error('No se cargó la librería de Supabase');
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!normalizedEmail) throw accessError('Captura tu correo.', 'AUREA_EMAIL_REQUIRED');
+    const response = await client.auth.signInWithOtp({
+      email: normalizedEmail,
+      options: { shouldCreateUser: false }
+    });
+    if (response.error) throw response.error;
+    return normalizedEmail;
+  }
+
+  async function signInWithPassword(email, password) {
+    if (!client) throw new Error('No se cargó la librería de Supabase');
+    if (!email || !password) throw accessError('Falta configuración de acceso.', 'AUREA_AUTH_CONFIGURATION');
+    const response = await client.auth.signInWithPassword({
+      email: String(email).trim().toLowerCase(),
+      password: String(password)
+    });
+    if (response.error) throw response.error;
+    return response.data.session;
+  }
+
+  async function verifyOtp(email, token) {
+    if (!client) throw new Error('No se cargó la librería de Supabase');
+    const response = await client.auth.verifyOtp({
+      email: String(email || '').trim().toLowerCase(),
+      token: String(token || '').replace(/\D/g, ''),
+      type: 'email'
+    });
+    if (response.error) throw response.error;
+    return response.data.session;
+  }
+
+  async function signOut() {
+    if (!client) return;
+    const response = await client.auth.signOut({ scope: 'local' });
+    company = null;
+    membership = null;
+    authenticatedUser = null;
+    if (response.error) throw response.error;
+  }
+
+  function onAuthStateChange(callback) {
+    if (!client) return { unsubscribe() {} };
+    const subscription = client.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT') {
+        company = null;
+        membership = null;
+        authenticatedUser = null;
+      }
+      callback(event, session);
+    });
+    return subscription.data.subscription;
+  }
+
   async function connect() {
     if (!client) throw new Error('No se cargó la librería de Supabase');
-    company = await result(
-      client.from('companies').select('*').eq('code', CONFIG.companyCode).single()
+
+    authenticatedUser = await getUser();
+    const memberships = await result(
+      client
+        .from('company_members')
+        .select('company_id')
+        .eq('user_id', authenticatedUser.id)
     );
-    return { companyId: company.id, code: company.code };
+
+    if (!memberships || !memberships.length) {
+      throw accessError(
+        'Tu cuenta no tiene acceso a AUREA. Solicita una invitación al administrador.',
+        'AUREA_MEMBERSHIP_REQUIRED'
+      );
+    }
+
+    company = null;
+    membership = null;
+
+    for (const candidate of memberships) {
+      const response = await client
+        .from('companies')
+        .select('*')
+        .eq('id', candidate.company_id)
+        .eq('code', CONFIG.companyCode)
+        .maybeSingle();
+
+      if (response.error) throw response.error;
+      if (response.data) {
+        company = response.data;
+        membership = candidate;
+        break;
+      }
+    }
+
+    if (!company) {
+      throw accessError(
+        'Tu cuenta no pertenece a la empresa AUREA.',
+        'AUREA_COMPANY_REQUIRED'
+      );
+    }
+
+    return {
+      companyId: company.id,
+      code: company.code,
+      user: authenticatedUser,
+      membership
+    };
   }
 
   window.AureaCloud = {
@@ -695,6 +838,19 @@
     delete: remove,
     clear,
     fileURL,
-    isConnected: () => !!company
+    auth: {
+      getLoginSalt,
+      verifyLoginHash,
+      getSession,
+      getUser,
+      sendOtp,
+      signInWithPassword,
+      verifyOtp,
+      signOut,
+      onAuthStateChange
+    },
+    currentUser: () => authenticatedUser,
+    currentMembership: () => membership,
+    isConnected: () => !!company && !!authenticatedUser
   };
 })();

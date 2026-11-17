@@ -1,0 +1,42 @@
+name: AUREA - Login de pruebas
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: aurea-test-pages
+  cancel-in-progress: false
+
+jobs:
+  publish-test:
+    runs-on: ubuntu-latest
+    environment: github-pages
+    env:
+      AUREA_TEST_EMAIL: ${{ vars.AUREA_TEST_EMAIL }}
+    steps:
+      - name: Checkout de main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Verificar correo configurado
+        run: |
+          test -n "$AUREA_TEST_EMAIL" || { echo "Falta AUREA_TEST_EMAIL"; exit 1; }
+      - name: Construir artefacto publico
+        run: |
+          mkdir -p dist
+          cp index.html supabase-adapter.js auth-password.js dist/
+          node -e 'const fs=require("fs");const email=process.env.AUREA_TEST_EMAIL;fs.writeFileSync("dist/auth-config.js","window.AureaAuthConfig = Object.freeze({ email: "+JSON.stringify(email.trim().toLowerCase())+" });\n")'
+      - name: Configurar GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Publicar artefacto
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - name: Desplegar pagina
+        uses: actions/deploy-pages@v4
