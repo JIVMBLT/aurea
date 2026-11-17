@@ -7,12 +7,19 @@
   const email = String(window.AureaAuthConfig?.email || '').trim().toLowerCase();
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
   const PIN_RE = /^[0-9]{6}$/;
+  // Acceso de pruebas persistente por seis horas, incluso al recargar.
+  // El hash usado como comprobante es reutilizable; no es un JWT firmado.
+  const SESSION_KEY = 'aurea.pin.session.v1';
+  const SESSION_DURATION_MS = 6 * 60 * 60 * 1000;
+  const HASH_RE = /^\$2[ab]\$[0-9]{2}\$[./A-Za-z0-9]{53}$/;
 
   let gate, form, pinInput, messageBox, submitButton;
   let readyPromise, resolveReady;
   let authenticated = false;
   let failures = 0;
   let blockedUntil = 0;
+  let expiresAt = 0;
+  let expiryTimer = null;
 
   function el(tag, attributes = {}, value) {
     const node = document.createElement(tag);
@@ -128,6 +135,108 @@
     });
   }
 
+  function clearSavedSession() {
+    try { localStorage.removeItem(SESSION_KEY); } catch (_) {}
+  }
+
+  function isAuthenticated() {
+    return authenticated && expiresAt > Date.now();
+  }
+
+  function expireSession() {
+    clearSavedSession();
+    if (expiryTimer !== null) clearTimeout(expiryTimer);
+    expiryTimer = null;
+    expiresAt = 0;
+    authenticated = false;
+    try { cloud?.auth?.clearLoginProof?.(); } catch (_) {}
+    if (gate) {
+      gate.hidden = false;
+      document.body.classList.add('aurea-auth-locked');
+      document.body.classList.remove('aurea-authenticated');
+      setMessage('Sesión vencida. Introduce de nuevo el código.', 'error');
+      pinInput.value = '';
+      pinInput.focus();
+    }
+  }
+
+  function scheduleExpiry(expiry) {
+    if (expiryTimer !== null) clearTimeout(expiryTimer);
+    expiresAt = expiry;
+    const remaining = expiry - Date.now();
+    if (remaining <= 0) {
+      expireSession();
+      return;
+    }
+    expiryTimer = setTimeout(() => {
+      if (Date.now() >= expiresAt) expireSession();
+      else scheduleExpiry(expiresAt);
+    }, Math.min(remaining, 2147483647));
+  }
+
+  function saveSession(proof) {
+    const issuedAt = Date.now();
+    const expiry = issuedAt + SESSION_DURATION_MS;
+    try {
+      localStorage.setItem(SESSION_KEY, JSON.stringify({
+        email, proof, issuedAt, expiresAt: expiry
+      }));
+    } catch (error) {
+      console.warn('No se pudo persistir la sesión de pruebas.', error);
+    }
+    cloud.auth.setLoginProof(email, proof, expiry);
+    scheduleExpiry(expiry);
+  }
+
+  async function restoreSession() {
+    let saved;
+    try {
+      saved = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+    } catch (_) {
+      clearSavedSession();
+      return false;
+    }
+    if (!saved) return false;
+    const now = Date.now();
+    if (saved.email !== email ||
+        !HASH_RE.test(String(saved.proof || '')) ||
+        !Number.isFinite(saved.issuedAt) ||
+        !Number.isFinite(saved.expiresAt) ||
+        saved.issuedAt > now + 10000 ||
+        saved.expiresAt <= now ||
+        saved.expiresAt - saved.issuedAt !== SESSION_DURATION_MS) {
+      clearSavedSession();
+      return false;
+    }
+    try {
+      // active=1 y hash almacenado se comprueban de nuevo en cada recarga.
+      const stillValid = await cloud.auth.verifyLoginHash(email, saved.proof);
+      if (!stillValid) {
+        clearSavedSession();
+        return false;
+      }
+      cloud.auth.setLoginProof(email, saved.proof, saved.expiresAt);
+      scheduleExpiry(saved.expiresAt);
+      unlock();
+      return true;
+    } catch (error) {
+      console.warn('No se pudo revalidar la sesión de AUREA.', error);
+      return false;
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && authenticated && Date.now() >= expiresAt) expireSession();
+  });
+  window.addEventListener('focus', () => {
+    if (authenticated && Date.now() >= expiresAt) expireSession();
+  });
+  window.addEventListener('storage', event => {
+    if (event.key === SESSION_KEY && event.newValue === null && authenticated) {
+      expireSession();
+    }
+  });
+
   function setMessage(text, kind = '') {
     messageBox.textContent = text;
     messageBox.dataset.kind = kind;
@@ -185,7 +294,7 @@
       if (!valid) throw new Error('LOGIN_DENIED');
       // Guardar en memoria el comprobante para que las politicas RLS
       // validen cada consulta a los datos remotos con el mismo PIN.
-      cloud.auth.setLoginProof(email, hashed);
+      saveSession(hashed);
       failures = 0;
       unlock();
     } catch (error) {
@@ -207,13 +316,29 @@
     if (readyPromise) return readyPromise;
     readyPromise = new Promise(resolve => {
       resolveReady = resolve;
-      if (ready()) pinInput.focus();
+      if (!ready()) return;
+      restoreSession().then(restored => {
+        if (!restored) {
+          gate.hidden = false;
+          document.body.classList.add('aurea-auth-locked');
+          pinInput.focus();
+        }
+      }).catch(error => {
+        console.error('Error al restaurar el acceso.', error);
+        gate.hidden = false;
+        pinInput.focus();
+      });
     });
     return readyPromise;
   }
 
   async function signOut() {
+    clearSavedSession();
+    try { cloud?.auth?.clearLoginProof?.(); } catch (_) {}
     authenticated = false;
+    if (expiryTimer !== null) clearTimeout(expiryTimer);
+    expiryTimer = null;
+    expiresAt = 0;
     window.location.reload();
   }
 
@@ -221,6 +346,7 @@
   window.AureaAuth = {
     requireAccess,
     signOut,
-    isAuthenticated: () => authenticated
+    isAuthenticated,
+    expiresAt: () => expiresAt
   };
 })();
