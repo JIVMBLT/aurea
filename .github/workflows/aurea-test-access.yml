@@ -1,4 +1,4 @@
-name: AUREA - Acceso universal de pruebas
+name: AUREA - Login de pruebas
 
 on:
   workflow_dispatch:
@@ -13,40 +13,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  provision-and-publish:
+  publish-test:
     runs-on: ubuntu-latest
     environment: github-pages
     env:
-      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       AUREA_TEST_EMAIL: ${{ vars.AUREA_TEST_EMAIL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      AUREA_TEST_PASSWORD: ${{ secrets.AUREA_TEST_PASSWORD }}
     steps:
-      - name: Checkout de la rama request
+      - name: Checkout de request
         uses: actions/checkout@v4
         with:
           ref: request
           persist-credentials: false
-      - name: Configurar Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Preparar dependencias de aprovisionamiento
-        run: npm install --no-save --no-package-lock --ignore-scripts @supabase/supabase-js@2
-      - name: Registrar o actualizar cuenta de pruebas en Supabase
-        run: node scripts/provision-test-user.mjs
-      - name: Construir archivos publicos sin credenciales
+      - name: Verificar correo configurado
+        run: |
+          test -n "$AUREA_TEST_EMAIL" || { echo "Falta AUREA_TEST_EMAIL"; exit 1; }
+      - name: Construir artefacto publico
         run: |
           mkdir -p dist
           cp index.html supabase-adapter.js auth-password.js dist/
-          node -e "const fs=require('fs'); const email=process.env.AUREA_TEST_EMAIL; if(!email) process.exit(1); fs.writeFileSync('dist/auth-config.js','window.AureaAuthConfig = Object.freeze({ email: '+JSON.stringify(email.trim().toLowerCase())+' });\\n')"
-          if grep -Fq "$AUREA_TEST_PASSWORD" dist/auth-config.js; then echo "Error: secreto filtrado en configuracion"; exit 1; fi
+          node -e 'const fs=require("fs");const email=process.env.AUREA_TEST_EMAIL;fs.writeFileSync("dist/auth-config.js","window.AureaAuthConfig = Object.freeze({ email: "+JSON.stringify(email.trim().toLowerCase())+" });\n")'
       - name: Configurar GitHub Pages
         uses: actions/configure-pages@v5
-      - name: Publicar artefacto estatico
+      - name: Publicar artefacto
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
       - name: Desplegar pagina
-        id: deployment
         uses: actions/deploy-pages@v4
