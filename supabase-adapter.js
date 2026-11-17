@@ -13,6 +13,7 @@
   // Este comprobante es reutilizable; no es un token de sesion.
   let loginProof = null;
   let loginEmail = null;
+  let loginExpiresAt = 0;
   const sdk = window.supabase;
   const client = sdk && sdk.createClient
     ? sdk.createClient(CONFIG.url, CONFIG.publishableKey, {
@@ -21,6 +22,10 @@
             const requestUrl = typeof url === 'string' ? url : url?.url || '';
             if (!loginProof || !requestUrl.startsWith(CONFIG.url + '/')) {
               return window.fetch(url, options);
+            }
+            if (loginExpiresAt <= Date.now()) {
+              clearLoginProof();
+              return Promise.reject(new Error('La sesión de AUREA expiró. Vuelve a ingresar el código.'));
             }
             const headers = new Headers(options.headers || {});
             headers.set('x-aurea-email', loginEmail);
@@ -722,14 +727,25 @@
     return response.data === true;
   }
 
-  function setLoginProof(email, hash) {
+  function clearLoginProof() {
+    loginEmail = null;
+    loginProof = null;
+    loginExpiresAt = 0;
+    company = null;
+    membership = null;
+    authenticatedUser = null;
+  }
+
+  function setLoginProof(email, hash, expiresAt) {
     const normalized = String(email || '').trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized) ||
-        !/^\$2[ab]\$[0-9]{2}\$[./A-Za-z0-9]{53}$/.test(String(hash || ''))) {
-      throw accessError('Comprobante de acceso invalido.', 'AUREA_PIN_PROOF_INVALID');
+        !/^\$2[ab]\$[0-9]{2}\$[./A-Za-z0-9]{53}$/.test(String(hash || '')) ||
+        !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw accessError('Comprobante de acceso invalido o vencido.', 'AUREA_PIN_PROOF_INVALID');
     }
     loginEmail = normalized;
     loginProof = hash;
+    loginExpiresAt = expiresAt;
   }
 
   async function getSession() {
@@ -809,7 +825,8 @@
 
   async function connect() {
     if (!client) throw new Error('No se cargó la librería de Supabase');
-    if (!loginProof || !loginEmail) {
+    if (!loginProof || !loginEmail || loginExpiresAt <= Date.now()) {
+      clearLoginProof();
       throw accessError('Primero valida el codigo de acceso.', 'AUREA_PIN_REQUIRED');
     }
 
@@ -850,6 +867,7 @@
     auth: {
       getLoginSalt,
       setLoginProof,
+      clearLoginProof,
       verifyLoginHash,
       getSession,
       getUser,
