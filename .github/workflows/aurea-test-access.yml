@@ -19,10 +19,10 @@ jobs:
     env:
       AUREA_TEST_EMAIL: ${{ vars.AUREA_TEST_EMAIL }}
     steps:
-      - name: Checkout de request
+      - name: Checkout de main
         uses: actions/checkout@v4
         with:
-          ref: request
+          ref: main
           persist-credentials: false
       - name: Verificar correo configurado
         run: |
