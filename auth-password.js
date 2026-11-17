@@ -42,7 +42,12 @@
       '.aurea-auth-form label{display:grid;gap:7px;font-size:13px;font-weight:700;color:#403a33}',
       '.aurea-auth-form input{width:100%;box-sizing:border-box;border:1px solid #cfc8bf;border-radius:12px;padding:13px 14px;background:#fff;color:#171411;font:inherit;outline:none}',
       '.aurea-auth-form input:focus{border-color:#b9852f;box-shadow:0 0 0 3px rgba(185,133,47,.17)}',
-      '.aurea-auth-code{text-align:center;letter-spacing:.33em;font-size:24px!important;font-variant-numeric:tabular-nums}',
+      '.aurea-auth-code-wrap{position:relative;display:flex;align-items:center}',
+      '.aurea-auth-form .aurea-auth-code{height:64px;padding:12px 62px 12px 30px;border-radius:18px;text-align:center;letter-spacing:.36em;font-size:29px!important;font-weight:700;font-variant-numeric:tabular-nums}',
+      '.aurea-auth-toggle{position:absolute;right:10px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:44px;height:44px;padding:0;border:0;border-radius:12px;background:transparent;color:#645d55;cursor:pointer}',
+      '.aurea-auth-toggle:hover{background:#f3f0ec;color:#211d18}',
+      '.aurea-auth-toggle:focus-visible{outline:2px solid #b9852f;outline-offset:2px}',
+      '.aurea-auth-toggle svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
       '.aurea-auth-primary{min-height:46px;border:1px solid #211d18;border-radius:12px;padding:11px 16px;background:#211d18;color:#fff;font:inherit;font-weight:750;cursor:pointer}',
       '.aurea-auth-primary:hover{background:#3a3026}',
       '.aurea-auth-primary:disabled{cursor:not-allowed;opacity:.55}',
@@ -69,11 +74,8 @@
     const intro = el('p', {}, 'Introduce el código numérico de 6 dígitos para continuar.');
 
     form = el('form', { class: 'aurea-auth-form', id: 'aureaPinForm' });
-    const userLabel = el('label', {}, 'Correo');
-    const userDisplay = el('input', { type: 'email', readonly: 'readonly', 'aria-label': 'Correo predeterminado' });
-    userDisplay.value = email;
-    userLabel.append(userDisplay);
     const pinLabel = el('label', { for: 'aureaPinInput' }, 'Código de acceso');
+    const pinWrap = el('div', { class: 'aurea-auth-code-wrap' });
     pinInput = el('input', {
       id: 'aureaPinInput', class: 'aurea-auth-code',
       type: 'password', name: 'code', inputmode: 'numeric',
@@ -81,9 +83,27 @@
       maxlength: '6', minlength: '6',
       required: 'required', 'aria-describedby': 'aureaAuthMessage'
     });
-    pinLabel.append(pinInput);
-    submitButton = el('button', { class: 'aurea-auth-primary', type: 'submit' }, 'Entrar');
-    form.append(userLabel, pinLabel, submitButton);
+    const pinToggle = el('button', {
+      type: 'button', class: 'aurea-auth-toggle',
+      'aria-label': 'Mostrar código', 'aria-pressed': 'false',
+      title: 'Mostrar código'
+    });
+    const eyeSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';
+    const eyeOffSvg = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 3 18 18"/><path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a14 14 0 0 1-3.2 3.9"/><path d="M6.2 6.2C3.4 8.1 2 12 2 12s3.5 7 10 7a10.3 10.3 0 0 0 4-.8"/><path d="M10 10a3 3 0 0 0 4 4"/></svg>';
+    pinToggle.innerHTML = eyeSvg;
+    pinToggle.addEventListener('click', () => {
+      const show = pinInput.type === 'password';
+      pinInput.type = show ? 'text' : 'password';
+      pinToggle.innerHTML = show ? eyeOffSvg : eyeSvg;
+      pinToggle.setAttribute('aria-label', show ? 'Ocultar código' : 'Mostrar código');
+      pinToggle.setAttribute('aria-pressed', String(show));
+      pinToggle.title = show ? 'Ocultar código' : 'Mostrar código';
+      pinInput.focus({ preventScroll: true });
+    });
+    pinWrap.append(pinInput, pinToggle);
+    pinLabel.append(pinWrap);
+    submitButton = el('button', { class: 'aurea-auth-primary', type: 'submit' }, 'Verificar');
+    form.append(pinLabel, submitButton);
 
     messageBox = el('p', {
       id: 'aureaAuthMessage', class: 'aurea-auth-message',
@@ -175,7 +195,7 @@
       pinInput.focus();
     } finally {
       submitButton.disabled = false;
-      submitButton.textContent = 'Entrar';
+      submitButton.textContent = 'Verificar';
     }
   }
 
