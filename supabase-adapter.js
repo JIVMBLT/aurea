@@ -715,6 +715,17 @@
     return normalizedEmail;
   }
 
+  async function signInWithPassword(email, password) {
+    if (!client) throw new Error('No se cargó la librería de Supabase');
+    if (!email || !password) throw accessError('Falta configuración de acceso.', 'AUREA_AUTH_CONFIGURATION');
+    const response = await client.auth.signInWithPassword({
+      email: String(email).trim().toLowerCase(),
+      password: String(password)
+    });
+    if (response.error) throw response.error;
+    return response.data.session;
+  }
+
   async function verifyOtp(email, token) {
     if (!client) throw new Error('No se cargó la librería de Supabase');
     const response = await client.auth.verifyOtp({
@@ -814,6 +825,7 @@
       getSession,
       getUser,
       sendOtp,
+      signInWithPassword,
       verifyOtp,
       signOut,
       onAuthStateChange
