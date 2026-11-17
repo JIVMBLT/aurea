@@ -8,9 +8,25 @@
     bucket: 'aurea-files'
   });
 
+  // El PIN es el unico candado temporal: se adjunta el comprobante
+  // SOLO despues de verificarlo con public.aurea_login_verify.
+  // Este comprobante es reutilizable; no es un token de sesion.
+  let loginProof = null;
+  let loginEmail = null;
   const sdk = window.supabase;
   const client = sdk && sdk.createClient
     ? sdk.createClient(CONFIG.url, CONFIG.publishableKey, {
+        global: {
+          fetch: (url, options = {}) => {
+            if (!loginProof || !String(url).startsWith(CONFIG.url + '/')) {
+              return window.fetch(url, options);
+            }
+            const headers = new Headers(options.headers || {});
+            headers.set('x-aurea-email', loginEmail);
+            headers.set('x-aurea-pin-proof', loginProof);
+            return window.fetch(url, { ...options, headers });
+          }
+        },
         auth: {
           persistSession: true,
           autoRefreshToken: true,
@@ -703,6 +719,16 @@
     return response.data === true;
   }
 
+  function setLoginProof(email, hash) {
+    const normalized = String(email || '').trim().toLowerCase();
+    if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(normalized) ||
+        !/^\\$2[ab]\\$[0-9]{2}\\$[./A-Za-z0-9]{53}$/.test(String(hash || ''))) {
+      throw accessError('Comprobante de acceso invalido.', 'AUREA_PIN_PROOF_INVALID');
+    }
+    loginEmail = normalized;
+    loginProof = hash;
+  }
+
   async function getSession() {
     if (!client) throw new Error('No se cargó la librería de Supabase');
     const response = await client.auth.getSession();
@@ -760,6 +786,8 @@
     company = null;
     membership = null;
     authenticatedUser = null;
+    loginProof = null;
+    loginEmail = null;
     if (response.error) throw response.error;
   }
 
@@ -778,48 +806,25 @@
 
   async function connect() {
     if (!client) throw new Error('No se cargó la librería de Supabase');
-
-    authenticatedUser = await getUser();
-    const memberships = await result(
-      client
-        .from('company_members')
-        .select('company_id')
-        .eq('user_id', authenticatedUser.id)
-    );
-
-    if (!memberships || !memberships.length) {
-      throw accessError(
-        'Tu cuenta no tiene acceso a AUREA. Solicita una invitación al administrador.',
-        'AUREA_MEMBERSHIP_REQUIRED'
-      );
+    if (!loginProof || !loginEmail) {
+      throw accessError('Primero valida el codigo de acceso.', 'AUREA_PIN_REQUIRED');
     }
 
-    company = null;
+    // El PIN compartido sustituye por ahora a Supabase Auth en la interfaz.
+    // Las politicas RLS del SQL aurea_pin_data_access.sql deben
+    // corroborar los encabezados en CADA operacion de la Data API.
+    const selected = await client
+      .from('companies')
+      .select('*')
+      .eq('code', CONFIG.companyCode)
+      .maybeSingle();
+    if (selected.error) throw selected.error;
+    if (!selected.data) {
+      throw accessError('No se puede leer la empresa AUREA. Revisa las politicas de Supabase.', 'AUREA_COMPANY_REQUIRED');
+    }
+    company = selected.data;
     membership = null;
-
-    for (const candidate of memberships) {
-      const response = await client
-        .from('companies')
-        .select('*')
-        .eq('id', candidate.company_id)
-        .eq('code', CONFIG.companyCode)
-        .maybeSingle();
-
-      if (response.error) throw response.error;
-      if (response.data) {
-        company = response.data;
-        membership = candidate;
-        break;
-      }
-    }
-
-    if (!company) {
-      throw accessError(
-        'Tu cuenta no pertenece a la empresa AUREA.',
-        'AUREA_COMPANY_REQUIRED'
-      );
-    }
-
+    authenticatedUser = { email: loginEmail, id: 'aurea-pin-shared' };
     return {
       companyId: company.id,
       code: company.code,
@@ -827,6 +832,7 @@
       membership
     };
   }
+
 
   window.AureaCloud = {
     config: CONFIG,
@@ -840,6 +846,7 @@
     fileURL,
     auth: {
       getLoginSalt,
+      setLoginProof,
       verifyLoginHash,
       getSession,
       getUser,
