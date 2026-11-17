@@ -134,7 +134,7 @@
   }
 
   function ready() {
-    if (!emailValid || !cloud?.auth?.getLoginSalt || !cloud?.auth?.verifyLoginHash || !window.dcodeIO?.bcrypt) {
+    if (!emailValid || !cloud?.auth?.getLoginSalt || !cloud?.auth?.verifyLoginHash || !cloud?.auth?.setLoginProof || !window.dcodeIO?.bcrypt) {
       submitButton.disabled = true;
       setMessage('Falta configurar el acceso de pruebas o cargar el motor bcrypt.', 'error');
       return false;
@@ -183,6 +183,9 @@
       // Se envía solo el hash; el RPC consulta public.login con active=1.
       const valid = await cloud.auth.verifyLoginHash(email, hashed);
       if (!valid) throw new Error('LOGIN_DENIED');
+      // Guardar en memoria el comprobante para que las politicas RLS
+      // validen cada consulta a los datos remotos con el mismo PIN.
+      cloud.auth.setLoginProof(email, hashed);
       failures = 0;
       unlock();
     } catch (error) {
