@@ -18,7 +18,8 @@
     ? sdk.createClient(CONFIG.url, CONFIG.publishableKey, {
         global: {
           fetch: (url, options = {}) => {
-            if (!loginProof || !String(url).startsWith(CONFIG.url + '/')) {
+            const requestUrl = typeof url === 'string' ? url : url?.url || '';
+            if (!loginProof || !requestUrl.startsWith(CONFIG.url + '/')) {
               return window.fetch(url, options);
             }
             const headers = new Headers(options.headers || {});
@@ -28,8 +29,10 @@
           }
         },
         auth: {
-          persistSession: true,
-          autoRefreshToken: true,
+          // El PIN compartido no usa sesiones de Supabase Auth.
+          // Ignorar tokens antiguos que cambiarian el rol anon por authenticated.
+          persistSession: false,
+          autoRefreshToken: false,
           detectSessionInUrl: false,
           storageKey: 'aurea-auth'
         }
