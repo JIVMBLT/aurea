@@ -1,27 +1,28 @@
-# AUREA - Login provisional de seis digitos
+# AUREA: acceso por PIN en fase de pruebas
 
-Implementacion en la rama `request`. Esta pantalla es una **barrera visual de pruebas**, no autenticacion completa. La API de Supabase y sus tablas deben seguir protegidas con RLS/autenticacion propia; el PIN no crea un JWT ni otorga identidad de Supabase.
+La pantalla pide **un unico codigo numerico de seis digitos**. El correo configurado se usa internamente y no aparece en el formulario. El PIN se verifica con bcrypt contra `public.login`; se mantiene en memoria un comprobante derivado del hash para solicitar los datos de AUREA.
 
-## Configuracion y requisitos
+## Pasos obligatorios en Supabase SQL Editor
 
-1. Ejecutar `sql/aurea_login_rpc.sql` en Supabase SQL Editor como administrador de la tabla.
-2. Comprobar que `public.login` contiene `"user" = 'jvera@bltmexico.com.mx'`, `active=1` y un hash bcrypt de **exactamente seis digitos numericos** en `"pass"`. Si se hasheo otra palabra o codigo, no se validara un PIN de seis digitos.
-3. La variable de GitHub `AUREA_TEST_EMAIL` debe coincidir con el correo de `public.login`. El frontend lo muestra solo lectura.
-4. El workflow `.github/workflows/aurea-test-access.yml` construye `auth-config.js` con el correo y publica la app mediante Actions. **No utiliza ni necesita** `AUREA_TEST_PASSWORD` ni `SUPABASE_SERVICE_ROLE_KEY`. No revela el hash de la BD.
-5. Para ejecutar `workflow_dispatch` desde GitHub Actions normalmente debe existir el workflow en la rama predeterminada. Revisar el cambio antes de incorporarlo a main. GitHub Pages debe estar configurado para Actions.
+1. La tabla `public.login` debe contener el correo configurado en `auth-config.js`, el hash bcrypt de **exactamente seis digitos** y `active = 1`.
+2. Si no se ejecuto previamente, ejecutar `sql/aurea_login_rpc.sql`: crea `aurea_login_salt` y `aurea_login_verify`.
+3. Ejecutar `sql/aurea_pin_data_access.sql`: agrega la comprobacion del PIN a las politicas RLS de las tablas de datos de AUREA y permite las operaciones a la funcion `anon` **solo con el comprobante correcto**. Este script modifica permisos y politicas. Revisarlo antes de ejecutarlo, especialmente si las tablas se comparten con otros clientes o aplicaciones.
+4. Desplegar `main` en GitHub Pages, configurado para GitHub Actions. El workflow `aurea-test-access.yml` no utiliza ningun Secret.
 
-## Flujo
+Sin el segundo SQL, el PIN permite desbloquear la pantalla, pero las consultas a las tablas de datos pueden seguir fallando. Si el SQL falla por ausencia de `company_id` u otra incompatibilidad, el bloque transaccional revierte todo.
 
-1. Usuario introduce PIN de seis digitos.
-2. La funcion `aurea_login_salt` entrega unicamente la sal bcrypt del registro activo.
-3. El frontend genera el hash bcrypt, con la misma sal y costo que el hash almacenado, y lo manda a `aurea_login_verify`.
-4. La funcion compara el hash exacto con `public.login.pass` y `active=1`. Devuelve booleano.
-5. Si es correcto se muestra la interfaz; si no, permanece en login. Hay un limitador **solo local** de cinco intentos / un minuto, que no constituye proteccion frente a fuerza bruta remota.
+## Flujo y limitaciones
 
-## Riesgos y restricciones
+- El navegador solicita la sal bcrypt, genera el hash del codigo y lo compara por RPC.
+- Si es valido, las solicitudes posteriores incluyen `x-aurea-email` y `x-aurea-pin-proof` para que la funcion `aurea_pin_authorized()` lo verifique mediante RLS. No se utiliza Supabase Auth ni se requiere una segunda cuenta.
+- Los datos se consultan por la empresa `companies.code = 'aurea'`.
+- **Solo modo de pruebas:** el hash enviado se puede copiar/reutilizar como credencial. Un PIN de seis digitos es vulnerable a ataques de fuerza bruta; el limitador de intentos en la pagina no controla el servidor.
+- Las politicas de **Supabase Storage** (`storage.objects`) no se incluyen en este cambio. Adjuntos y fotos pueden continuar requiriendo permisos adicionales.
+- Las funciones y el esquema de la base no se han ejecutado desde GitHub. La integracion de extremo a extremo debe probarse en el entorno real.
 
-- El hash calculado en el navegador actua como credencial reutilizable. Quien lo capture podria repetir la llamada RPC. No almacenar informacion sensible basandose unicamente en esta barrera.
-- La sal bcrypt visible permite fuerza bruta fuera de linea sobre un PIN de solo un millon de combinaciones. La base de datos nunca entrega el hash original al navegador.
-- No hay sesion de Supabase Auth. El adaptador actual intentara `AureaCloud.connect()` al cargar los datos; si no existe una sesion real, **la app puede caer al respaldo local de IndexedDB**, no se sincronizara con Supabase. No se debe eludir RLS para forzar la conexion.
-- Los Secret existentes pueden conservarse por compatibilidad, pero ya no se usan en este workflow.
-- Pendiente probar extremo a extremo despues de ejecutar el SQL y desplegar la rama. No modificar `main` sin revision.
+## Enlaces principales
+
+- `auth-password.js`: pantalla y validacion del PIN.
+- `supabase-adapter.js`: client Supabase sin sesion Auth, conexions y encabezados.
+- `sql/aurea_login_rpc.sql`: RPC del login.
+- `sql/aurea_pin_data_access.sql`: autorizacion para datos y RLS.
