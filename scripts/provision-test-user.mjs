@@ -7,7 +7,7 @@ for (const key of required) {
 
 const email = process.env.AUREA_TEST_EMAIL.trim().toLowerCase();
 const password = process.env.AUREA_TEST_PASSWORD;
-if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) throw new Error('AUREA_TEST_EMAIL no es valido.');
+if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('AUREA_TEST_EMAIL no es valido.');
 if (password.length < 12) throw new Error('La clave de pruebas debe tener al menos 12 caracteres.');
 
 const admin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
