@@ -104,6 +104,9 @@ button,input,select,textarea{font:inherit;color:inherit}
 .icon-btn{border:0;background:transparent;width:40px;height:40px;border-radius:10px;cursor:pointer;font-size:20px;line-height:1;display:inline-grid;place-items:center;flex:none}
 .top .icon-btn{color:#fff}
 .top .icon-btn:hover{background:rgba(255,255,255,.14)}
+.top .icon-btn:disabled{opacity:.45;cursor:wait}
+@media(prefers-reduced-motion:no-preference){.top .refresh-busy{animation:aurea-spin 1.1s linear infinite}}
+@keyframes aurea-spin{to{transform:rotate(360deg)}}
 .banner{background:var(--warn-soft);color:var(--warn);padding:10px 16px;font-size:13.5px;text-align:center}
 main{max-width:980px;margin:0 auto;padding:16px 16px 120px}
 h2{font-size:16px;margin:0 0 10px}
@@ -321,6 +324,7 @@ body[data-co="aurea"] .banner{background:#fff6e8;color:#8a5a12;border-bottom:1px
   <button class="icon-btn" id="backBtn" hidden aria-label="Volver">‹</button>
   <img id="hLogo" class="hlogo" alt="" hidden>
   <div class="title"><h1 id="hTitle">Control de gastos</h1><p id="hSub">Proyectos</p></div>
+  <button type="button" class="icon-btn" id="refreshBtn" aria-label="Actualizar datos de Supabase" title="Actualizar datos de Supabase">⟳</button>
   <button class="icon-btn" id="menuBtn" aria-label="Menú">⋯</button>
 </header>
 <div class="banner" id="warn" hidden>Este visor no permite guardar datos: lo que captures se perderá al cerrar. Abre el archivo directamente en Chrome, Safari o Edge.</div>
@@ -453,8 +457,69 @@ const dbPut=(s,v)=>cloudMode?window.AureaCloud.put(s,v):localPut(s,v);
 const dbDel=(s,id)=>cloudMode?window.AureaCloud.delete(s,id):localDel(s,id);
 const dbClear=s=>cloudMode?window.AureaCloud.clear(s):localClear(s);
 
-async function loadAll(){S.allProjects=await dbAll('projects');S.lines=await dbAll('lines');S.expenses=await dbAll('expenses');S.allProspects=await dbAll('prospects');S.materials=await dbAll('materials');S.suppliers=await dbAll('suppliers');S.products=await dbAll('products');
-  S.settingsAll=Object.fromEntries((await dbAll('settings')).map(x=>[x.id,x]));applyCompany()}
+async function loadAll(){
+  // Aplicar datos SOLO despues de que todas las lecturas terminen bien:
+  // no dejar un estado parcialmente actualizado cuando falla Supabase.
+  const [projects,lines,expenses,prospects,materials,suppliers,products,settings]=await Promise.all([
+    dbAll('projects'),dbAll('lines'),dbAll('expenses'),dbAll('prospects'),
+    dbAll('materials'),dbAll('suppliers'),dbAll('products'),dbAll('settings')
+  ]);
+  S.allProjects=projects;S.lines=lines;S.expenses=expenses;
+  S.allProspects=prospects;S.materials=materials;S.suppliers=suppliers;S.products=products;
+  S.settingsAll=Object.fromEntries(settings.map(x=>[x.id,x]));
+  applyCompany()
+}
+/* Actualizacion silenciosa desde Supabase cada tres minutos y manual por boton. */
+const AUREA_REFRESH_MS=3*60*1000;
+let aureaRefreshPromise=null;
+let aureaRefreshTimer=null;
+
+async function refreshFromSupabase(manual=false){
+  if(aureaRefreshPromise)return aureaRefreshPromise;
+  if(!window.AureaAuth?.isAuthenticated()){
+    if(manual)toast('Tu sesión ha vencido. Introduce de nuevo el código.');
+    return false
+  }
+  // Nunca sustituir un formulario/modal abierto o una cotizacion sin guardar.
+  if(document.querySelector('dialog[open]')||(view.name==='quote'&&view.dirty)){
+    if(manual)toast('Cierra el formulario o guarda los cambios antes de actualizar.');
+    return false
+  }
+  const btn=document.getElementById('refreshBtn');
+  aureaRefreshPromise=(async()=>{
+    if(btn){btn.disabled=true;btn.classList.add('refresh-busy')}
+    const previousCloudMode=cloudMode;
+    try{
+      // Forzar llamada real a Supabase y no leer la cache de IndexedDB.
+      await window.AureaCloud.connect();
+      cloudMode=true;
+      await loadAll();
+      db={cloud:true};
+      const warn=document.getElementById('warn');
+      if(warn)warn.hidden=true;
+      render();
+      if(manual)toast('Datos actualizados desde Supabase.');
+      return true
+    }catch(error){
+      console.error('No se pudieron actualizar los datos de Supabase',error);
+      cloudMode=previousCloudMode;
+      // Preservar la informacion en pantalla ante errores de red/permisos.
+      if(manual)toast('No fue posible actualizar desde Supabase. Los datos visibles se conservaron.');
+      return false
+    }finally{
+      if(btn){btn.disabled=false;btn.classList.remove('refresh-busy')}
+    }
+  })();
+  try{return await aureaRefreshPromise}finally{aureaRefreshPromise=null}
+}
+
+function startAureaRefresh(){
+  if(aureaRefreshTimer!==null)return;
+  aureaRefreshTimer=setInterval(()=>{
+    if(window.AureaAuth?.isAuthenticated())refreshFromSupabase(false);
+  },AUREA_REFRESH_MS);
+}
+
 /* Datos de versiones anteriores (una sola empresa) → se asignan a E&E Consulting */
 async function migrate(){let ch=false;
   const old=S.settingsAll.company;
@@ -1989,6 +2054,7 @@ document.addEventListener('click',async ev=>{
 document.getElementById('backBtn').onclick=async()=>{
   if(view.name==='quote'){if(view.dirty&&!await ask('¿Salir sin guardar los cambios de la cotización?','Salir sin guardar',true))return;view={name:'prospect',id:view.id}}
   else view={name:'home',section:view.name==='prospect'?'prospectos':view.name==='supplier'?'catalogo':'proyectos'};render();window.scrollTo(0,0)};
+document.getElementById('refreshBtn').addEventListener('click',()=>refreshFromSupabase(true));
 const menu=document.getElementById('menu');
 document.getElementById('menuBtn').onclick=async()=>{document.getElementById('menuCo').textContent='🏢 Datos de '+coFor(CO).short+' (logo, RFC, folios)';menu.showModal();
   if(cloudMode)document.getElementById('storeInfo').textContent='Datos sincronizados con Supabase. La caché local se usa solo como respaldo si la conexión falla.';
@@ -2022,6 +2088,7 @@ document.getElementById('catFile').onchange=e=>{const f=e.target.files[0];e.targ
   }
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
   await loadAll();await migrate();render();
+  startAureaRefresh();
   if(cloudMode)toast('Conectado con Supabase');
 })();
 </script>
