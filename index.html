@@ -328,6 +328,7 @@ body[data-co="aurea"] .banner{background:#fff6e8;color:#8a5a12;border-bottom:1px
   <button class="icon-btn" id="menuBtn" aria-label="Menú">⋯</button>
 </header>
 <div class="banner" id="warn" hidden>Este visor no permite guardar datos: lo que captures se perderá al cerrar. Abre el archivo directamente en Chrome, Safari o Edge.</div>
+<div class="banner" id="importWarn" role="alert" hidden>Sin conexión con Supabase. Las importaciones CSV/Excel están bloqueadas para evitar datos locales y duplicados. Reconecta y pulsa Actualizar.</div>
 <main id="app"></main>
 <button class="fab" id="fab" hidden></button>
 <dialog id="modal"></dialog>
@@ -414,6 +415,22 @@ function ask(msg,okLabel='Aceptar',danger=false){return new Promise(res=>{const 
 
 /* ===== Almacenamiento (Supabase, con respaldo local IndexedDB) ===== */
 let db=null,memoryOnly=false,cloudMode=false;
+let csvImportRunning=false,csvImportConnectionFailed=false;
+function updateCsvImportGuard(){
+  const offline=!cloudMode||navigator.onLine===false||csvImportConnectionFailed;
+  const banner=document.getElementById('importWarn');
+  if(banner){
+    banner.hidden=!offline;
+    if(offline)banner.textContent='Sin conexión verificada con Supabase. Importaciones CSV/Excel bloqueadas para evitar registros locales y duplicados. Restablece la conexión y pulsa Actualizar (⟳).';
+  }
+  document.querySelectorAll('[data-csvup]').forEach(b=>{
+    b.disabled=offline||csvImportRunning;
+    b.title=offline?'Necesitas conexión con Supabase para importar':csvImportRunning?'Hay otra importación en curso':'Importar en Supabase';
+  });
+  return !offline;
+}
+window.addEventListener('offline',()=>{csvImportConnectionFailed=true;updateCsvImportGuard()});
+window.addEventListener('online',()=>{csvImportConnectionFailed=true;updateCsvImportGuard()});
 const STORES=['projects','lines','expenses','files','settings','prospects','materials','suppliers','products'];
 const mem=Object.fromEntries(STORES.map(s=>[s,new Map()]));
 const urlCache=new Map();
@@ -428,6 +445,8 @@ async function openDB(){
     try{
       await window.AureaCloud.connect();
       cloudMode=true;
+      csvImportConnectionFailed=false;
+      updateCsvImportGuard();
       document.getElementById('warn').hidden=true;
       return{cloud:true}
     }catch(e){
@@ -438,6 +457,7 @@ async function openDB(){
     }
   }
   cloudMode=false;
+  updateCsvImportGuard();
   return openLocalDB()
 }
 
@@ -497,12 +517,16 @@ async function refreshFromSupabase(manual=false){
       db={cloud:true};
       const warn=document.getElementById('warn');
       if(warn)warn.hidden=true;
+      csvImportConnectionFailed=false;
+      updateCsvImportGuard();
       render();
       if(manual)toast('Datos actualizados desde Supabase.');
       return true
     }catch(error){
       console.error('No se pudieron actualizar los datos de Supabase',error);
       cloudMode=previousCloudMode;
+      csvImportConnectionFailed=true;
+      updateCsvImportGuard();
       // Preservar la informacion en pantalla ante errores de red/permisos.
       if(manual)toast('No fue posible actualizar desde Supabase. Los datos visibles se conservaron.');
       return false
@@ -1723,7 +1747,52 @@ const numText=n=>Number.isInteger(n)?String(n):String(+n.toFixed(6));
 function normCur(v){const map={RNB:'CNY',RMB:'CNY',YUAN:'CNY',CNY:'CNY',USD:'USD',DLS:'USD',DOLARES:'USD',MXN:'MXN',PESOS:'MXN',MN:'MXN',EUR:'EUR',EUROS:'EUR'};
   const out=[];for(const t of normTxt(v).toUpperCase().split(/[^A-Z]+/)){const c=map[t];if(c&&!out.includes(c))out.push(c)}return out.join(' / ')}
 const getSources=()=>{const out=[...SOURCES];for(const x of S.prospects){const v=(x.source||'').trim();if(v&&!out.some(y=>normTxt(y)===normTxt(v)))out.push(v)}return out};
+// Las importaciones solo escriben en Supabase: nunca se desvían a IndexedDB.
 async function importKind(k,file){
+  if(csvImportRunning)throw new Error('Ya hay una importación en curso en esta pestaña.');
+  csvImportRunning=true;
+  updateCsvImportGuard();
+  try{
+    const run=async()=>{
+      if(!cloudMode||navigator.onLine===false)
+        throw new Error('Importación bloqueada: Supabase no está conectado. Cierra el formulario y pulsa Actualizar (⟳).');
+      if(!window.AureaAuth?.isAuthenticated())
+        throw new Error('Sesión vencida. Vuelve a introducir el PIN.');
+      try{
+        await window.AureaCloud.connect();
+        // Los índices naturales se comparan siempre con datos frescos del servidor.
+        await loadAll();
+      }catch(error){
+        console.error('Falló la comprobación de Supabase antes de importar.',error);
+        csvImportConnectionFailed=true;
+        updateCsvImportGuard();
+        throw new Error('No se pudo verificar Supabase. Importación cancelada sin escribir. Revisa la conexión y pulsa Actualizar (⟳).');
+      }
+      csvImportConnectionFailed=false;
+      updateCsvImportGuard();
+      return importKindRows(k,file)
+    };
+    if(navigator.locks?.request){
+      return await navigator.locks.request('aurea.import.'+CO,{ifAvailable:true},async lock=>{
+        if(!lock)throw new Error('Otra pestaña está importando datos de AUREA. Evita cargar el mismo archivo simultáneamente.');
+        return run();
+      })
+    }
+    return await run()
+  }catch(error){
+    if(cloudMode&&!csvImportConnectionFailed){
+      try{await loadAll();render()}catch(e){console.warn('No se pudo recargar tras el fallo de importación.',e)}
+    }
+    throw error
+  }finally{
+    csvImportRunning=false;
+    updateCsvImportGuard()
+  }
+}
+function importSame(oldRow,newRow,fields){
+  return !!oldRow&&fields.every(k=>JSON.stringify(oldRow[k]??'')===JSON.stringify(newRow[k]??''))
+}
+async function importKindRows(k,file){
   const sp=CSV_SPECS[k],res={k,nuevos:0,act:0,merged:0,interests:0,errs:[],warns:[]};
   const tb=await readTable(k,file),rows=tb.rows;
   if(tb.h<0){const idx=headerIdx(k,rows[0]||[]),miss=NEED[k].filter(x=>idx[x]==null);
@@ -1809,7 +1878,9 @@ function csvForm(){
       <li>Varias NOM en una celda: sepáralas con punto y coma, por ejemplo “NOM-016-SCFI-1993; NOM-001-SCFI-2018”.</li>
       <li>Productos: deja vacía la columna “Categoría” para un producto directo. Si “Usa valores propios” es “No”, el producto toma la fracción, IGI y NOM de su categoría.</li>
       <li>Moneda: USD o MXN (en proveedores también EUR o CNY).</li></ol></details>
+    <p class="muted small">Por seguridad, las importaciones requieren conexión activa con Supabase. En modo local quedan bloqueadas.</p>
     <div id="csvRes"></div>`,{submit:'Cerrar',onSave:()=>{}});
+  updateCsvImportGuard();
   modal.querySelector('.mform').addEventListener('click',e=>{const d=e.target.closest('[data-csvdl]'),u=e.target.closest('[data-csvup]');
     if(d)exportKind(d.dataset.csvdl);if(u){csvKind=u.dataset.csvup;document.getElementById('catFile').click()}});
 }
@@ -1825,7 +1896,9 @@ function clientCsvForm(){const n=S.prospects.length,sp=CSV_SPECS.cli;
       <li>Origen: acepta cualquier valor (por ejemplo Referido o las iniciales de quien lo trajo); los nuevos se agregan a la lista.</li>
       <li>Si un cliente aparece en varias filas (por ejemplo, uno por proyecto), se registra una sola vez con todos sus <b>proyectos de interés</b> (columna “Nombre del Proyecto” o “Proyectos de interés”).</li>
       <li>Una columna sin título con texto (como la columna A del Excel) se guarda como <b>Referencia</b>.</li></ol></details>
+    <p class="muted small">Por seguridad, las importaciones requieren conexión activa con Supabase. En modo local quedan bloqueadas.</p>
     <div id="csvRes"></div>`,{submit:'Cerrar',onSave:()=>{}});
+  updateCsvImportGuard();
   modal.querySelector('.mform').addEventListener('click',e=>{const d=e.target.closest('[data-csvdl]'),u=e.target.closest('[data-csvup]');
     if(d)exportKind('cli');if(u){csvKind='cli';document.getElementById('catFile').click()}});
 }
@@ -2089,6 +2162,7 @@ document.getElementById('catFile').onchange=e=>{const f=e.target.files[0];e.targ
   }
   try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist()}catch(e){}
   await loadAll();await migrate();render();
+  updateCsvImportGuard();
   startAureaRefresh();
   if(cloudMode)toast('Conectado con Supabase');
 })();
