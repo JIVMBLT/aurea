@@ -1793,7 +1793,7 @@ function importSame(oldRow,newRow,fields){
   return !!oldRow&&fields.every(k=>JSON.stringify(oldRow[k]??'')===JSON.stringify(newRow[k]??''))
 }
 async function importKindRows(k,file){
-  const sp=CSV_SPECS[k],res={k,nuevos:0,act:0,merged:0,interests:0,errs:[],warns:[]};
+  const sp=CSV_SPECS[k],res={k,nuevos:0,act:0,merged:0,duplicates:0,interests:0,errs:[],warns:[]};
   const tb=await readTable(k,file),rows=tb.rows;
   if(tb.h<0){const idx=headerIdx(k,rows[0]||[]),miss=NEED[k].filter(x=>idx[x]==null);
     showCsvRes({...res,errs:[{row:'—',msg:(rows.length?'No encontré la fila de encabezados. Faltan columnas: '+miss.map(x=>sp.cols.find(c=>c[0]===x)[1]).join(', '):'El archivo no tiene registros')+'. Descarga la plantilla.'}]});return}
@@ -1812,9 +1812,14 @@ async function importKindRows(k,file){
     const nomList=()=>g('noms').split(/[;|\n]/).map(x=>x.trim().toUpperCase()).filter(Boolean);
     if(k==='sup'){const ex=S.suppliers.find(x=>normTxt(x.name)===normTxt(g('name')));const cur=normCur(g('currency'));
       const em=g('email');if(em&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em))warn(`el correo “${em}” no es válido; se importó sin correo.`);
-      const rec={...(ex||{}),id:ex?ex.id:uid(),name:g('name'),createdAt:(ex&&ex.createdAt)||Date.now(),updatedAt:Date.now(),currency:cur||((ex&&ex.currency)||'USD')};
+      const currencies=cur.split(' / ').filter(Boolean);
+      if(currencies.length>1)warn('Hay varias monedas; se utilizó USD si estaba incluida, o la primera.');
+      const currency=currencies.includes('USD')?'USD':(currencies[0]||((ex&&ex.currency)||'USD'));
+      const rec={...(ex||{}),id:ex?ex.id:uid(),name:ex?ex.name:g('name'),createdAt:(ex&&ex.createdAt)||Date.now(),updatedAt:Date.now(),currency};
       const sc=g('supCat');if(sc){const known=scats.find(z=>normTxt(z)===normTxt(sc));if(!known){scats.push(sc);grow=true}rec.supCat=known||sc}else if(!ex)rec.supCat='';
       for(const f of ['contactName','phone','email','website','city','state','country','address','port','notes','ref']){const v=f==='email'&&em&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)?'':g(f);if(v||!ex)rec[f]=v||(ex?ex[f]||'':'')}
+      const supplierFields=['name','supCat','contactName','phone','email','website','city','state','country','address','port','currency','notes'];
+      if(importSame(ex,rec,supplierFields)){res.duplicates++;continue}
       await dbPut('suppliers',rec);if(ex){res.act++;S.suppliers[S.suppliers.indexOf(ex)]=rec}else{res.nuevos++;S.suppliers.push(rec)}continue}
     if(k==='cli'){const name=g('name'),ex=S.prospects.find(x=>normTxt(clientName(x))===normTxt(name)),again=ex&&touched.has(ex.id);
       let rfc=g('rfc').toUpperCase().replace(/\s+/g,'');if(rfc&&!/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(rfc)){warn(`el RFC “${g('rfc')}” no es válido (debe tener 12 o 13 caracteres); se importó sin RFC.`);rfc=''}
@@ -1828,10 +1833,14 @@ async function importKindRows(k,file){
       rec.createdDate=again?(rec.createdDate&&fecha?(fecha<rec.createdDate?fecha:rec.createdDate):rec.createdDate||fecha):(fecha||(ex&&ex.createdDate)||today());
       const ints=[...(rec.interests||[])];for(const pn of g('projects').split(/[;\n]/).map(x=>x.trim()).filter(Boolean))if(!ints.some(i=>normTxt(i.name)===normTxt(pn))){ints.push({name:pn});res.interests++}
       rec.interests=ints;touched.add(rec.id);
-      await dbPut('prospects',rec);
-      if(ex)for(const pj of S.allProjects.filter(q=>q.clientProspectId===rec.id||q.fromProspectId===rec.id))await dbPut('projects',{...pj,client:keepName,contactName:rec.contactName,phone:rec.phone,email:rec.email});
+      const clientFields=['name','legalName','rfc','contactName','contactRole','phone','email','address','location','source','createdDate','notes','stage'];
+      const unchanged=importSame(ex,rec,clientFields);
+      if(!unchanged){
+        await dbPut('prospects',rec);
+        if(ex)for(const pj of S.allProjects.filter(q=>q.clientProspectId===rec.id||q.fromProspectId===rec.id))await dbPut('projects',{...pj,client:keepName,contactName:rec.contactName,phone:rec.phone,email:rec.email});
+      }
       if(ex){for(const arr of [S.prospects,S.allProspects]){const i=arr.findIndex(z=>z.id===rec.id);if(i>=0)arr[i]=rec}}
-      if(again)res.merged++;else if(ex)res.act++;else{res.nuevos++;S.prospects.push(rec);S.allProspects.push(rec)}continue}
+      if(unchanged)res.duplicates++;else if(again)res.merged++;else if(ex)res.act++;else{res.nuevos++;S.prospects.push(rec);S.allProspects.push(rec)}continue}
     const sup=S.suppliers.find(x=>normTxt(x.name)===normTxt(g('sup')));
     if(!sup){err(g('sup')?`El proveedor “${g('sup')}” no existe; impórtalo primero en Proveedores.`:'Falta el proveedor.');continue}
     if(k==='cat'){const ex=S.products.find(x=>x.supplierId===sup.id&&normTxt(x.name)===normTxt(g('name')));
@@ -1839,7 +1848,9 @@ async function importKindRows(k,file){
       const noms=nomList(),reqNom=YES(g('reqNom'))||noms.length>0;if(reqNom&&!noms.length){err('Marca “Requiere NOM” pero no indica ninguna NOM.');continue}
       const tipo=g('category');if(tipo&&!cats.some(x=>normTxt(x)===normTxt(tipo))){cats.push(tipo);grow=true}
       const rec={...(ex||{}),id:ex?ex.id:uid(),supplierId:sup.id,name:g('name'),category:tipo||(ex&&ex.category)||'',fraccion:g('fraccion'),igi,reqNom,noms,desc:g('desc')||(ex&&ex.desc)||'',createdAt:(ex&&ex.createdAt)||Date.now(),updatedAt:Date.now()};
-      await dbPut('products',rec);if(ex)res.act++;else{res.nuevos++;S.products.push(rec)}continue}
+      const categoryFields=['supplierId','name','category','fraccion','igi','reqNom','noms','desc'];
+      if(importSame(ex,rec,categoryFields)){res.duplicates++;continue}
+      await dbPut('products',rec);if(ex){res.act++;S.products[S.products.indexOf(ex)]=rec}else{res.nuevos++;S.products.push(rec)}continue}
     // productos
     let pr=null;if(g('cat')){pr=S.products.find(x=>x.supplierId===sup.id&&normTxt(x.name)===normTxt(g('cat')));if(!pr){err(`La categoría “${g('cat')}” no existe en ${sup.name}; impórtala primero en Categorías o deja vacío para producto directo.`);continue}}
     const own=!pr||(idx.own!=null&&g('own')!==''?YES(g('own')):g('igi')!=='');let tar;
@@ -1849,11 +1860,12 @@ async function importKindRows(k,file){
     else{if(pr.igi===''||pr.igi==null){err(`La categoría “${pr.name}” no tiene IGI; captúralo o marca “Usa valores propios”.`);continue}tar={ownTariff:false,fraccion:'',igi:'',reqNom:false,noms:[]}}
     const rc=g('refCost'),refCost=rc===''?'':parseNum(rc);if(rc!==''&&!(refCost>=0)){err(`Costo de referencia no válido (${rc}).`);continue}
     const unit=g('unit')||'pza';if(!units.some(x=>normTxt(x)===normTxt(unit))){units.push(unit);grow=true}
-    const full=normTxt([g('name'),g('model')].filter(Boolean).join(' '));
-    const ex=S.materials.find(x=>x.supplierId===sup.id&&(x.productId||'')===(pr?pr.id:'')&&normTxt(itemName(x))===full);
+    const ex=S.materials.find(x=>x.supplierId===sup.id&&(x.productId||'')===(pr?pr.id:'')&&normTxt(x.name)===normTxt(g('name'))&&normTxt(x.model)===normTxt(g('model')));
     const rec={...(ex||{}),id:ex?ex.id:uid(),supplierId:sup.id,productId:pr?pr.id:'',name:g('name'),model:g('model'),category:pr?(pr.category||pr.name):'',unit,
       reqInstall:YES(g('reqInstall')),reqPostSale:YES(g('reqPostSale')),...tar,refCost,refCur:g('refCur').toUpperCase()==='MXN'?'MXN':'USD',notes:g('notes'),createdAt:(ex&&ex.createdAt)||Date.now(),updatedAt:Date.now()};
-    await dbPut('materials',rec);if(ex)res.act++;else{res.nuevos++;S.materials.push(rec)}}
+    const productFields=['supplierId','productId','name','model','category','unit','reqInstall','reqPostSale','ownTariff','fraccion','igi','reqNom','noms','refCost','refCur','notes'];
+    if(importSame(ex,rec,productFields)){res.duplicates++;continue}
+    await dbPut('materials',rec);if(ex){res.act++;S.materials[S.materials.indexOf(ex)]=rec}else{res.nuevos++;S.materials.push(rec)}}
   if(grow)await saveLists(cats,units,scats);
   await loadAll();render();showCsvRes(res);
 }
@@ -1862,7 +1874,7 @@ function parseDateMX(v){v=String(v||'').trim();let y,m,d,a;
   else if((a=/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2}|\d{4})$/.exec(v)))[d,m,y]=[+a[1],+a[2],a[3].length===2?2000+(+a[3]):+a[3]];else return'';
   const dt=new Date(Date.UTC(y,m-1,d));if(dt.getUTCFullYear()!==y||dt.getUTCMonth()!==m-1||dt.getUTCDate()!==d)return'';
   return`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`}
-function showCsvRes(r){const t=CSV_SPECS[r.k].title,msg=`${r.sheet?`Hoja “${r.sheet}” · `:''}${t}: ${r.nuevos} nuevo(s), ${r.act} actualizado(s)${r.merged?`, ${r.merged} fila(s) unida(s) a un cliente repetido`:''}${r.interests?`, ${r.interests} proyecto(s) de interés`:''}${r.errs.length?`, ${r.errs.length} fila(s) omitida(s)`:''}${(r.warns||[]).length?`, ${r.warns.length} aviso(s)`:''}.`;
+function showCsvRes(r){const t=CSV_SPECS[r.k].title,msg=`${r.sheet?`Hoja “${r.sheet}” · `:''}${t}: ${r.nuevos} nuevo(s), ${r.act} actualizado(s)${r.merged?`, ${r.merged} fila(s) unida(s) a un cliente repetido`:''}${r.interests?`, ${r.interests} proyecto(s) de interés`:''}${r.duplicates?`, ${r.duplicates} duplicado(s) sin cambios`:''}${r.errs.length?`, ${r.errs.length} fila(s) omitida(s)`:''}${(r.warns||[]).length?`, ${r.warns.length} aviso(s)`:''}.`;
   const box=document.getElementById('csvRes');
   if(box&&modal.open){box.innerHTML=`<div class="csvres"><b>${esc(msg)}</b>${r.errs.length?`<div>Filas omitidas:</div><ul>${r.errs.map(e=>`<li>Fila ${e.row}: ${esc(e.msg)}</li>`).join('')}</ul>`:''}${(r.warns||[]).length?`<div>Avisos (la fila sí se importó):</div><ul>${r.warns.map(e=>`<li>Fila ${e.row} · ${esc(e.msg)}</li>`).join('')}</ul>`:''}</div>`;box.scrollIntoView({block:'nearest'})}
   else toast(msg)}
